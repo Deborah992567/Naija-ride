@@ -1,0 +1,161 @@
+{
+  "theme_archetype": "Archetype 4: Swiss & High-Contrast (Vibrant Transport Variant)",
+  "rationale": "High-contrast is essential for outdoor use under sunlight. The vibrant transport variant uses Nigerian Green and Danfo Yellow to establish local familiarity, trust, and clear visual hierarchy for fast decision-making.",
+  "colors": {
+    "background": {
+      "default": "#F8F9FA",
+      "map_overlay": "rgba(255, 255, 255, 0.9)"
+    },
+    "surface": {
+      "card": "#FFFFFF",
+      "bottom_sheet": "#FFFFFF",
+      "input": "#F1F5F9"
+    },
+    "primary": {
+      "default": "#008751",
+      "light": "#E6F3EC",
+      "dark": "#006B3F"
+    },
+    "secondary": {
+      "default": "#FFCC00",
+      "light": "#FFF9E6",
+      "dark": "#E6B800"
+    },
+    "text": {
+      "primary": "#1A1A1A",
+      "secondary": "#64748B",
+      "inverse": "#FFFFFF"
+    },
+    "status": {
+      "empty": "#10B981",
+      "moderate": "#F59E0B",
+      "packed": "#EF4444",
+      "delayed": "#EF4444"
+    },
+    "border": {
+      "default": "#E2E8F0",
+      "focus": "#008751"
+    }
+  },
+  "typography": {
+    "font_families": {
+      "heading": "Outfit, sans-serif",
+      "body": "Manrope, sans-serif"
+    },
+    "scales": {
+      "h1": "text-4xl font-black tracking-tight leading-none text-[#1A1A1A]",
+      "h2": "text-2xl font-bold tracking-tight text-[#1A1A1A]",
+      "h3": "text-xl font-bold text-[#1A1A1A]",
+      "body_large": "text-lg font-medium text-[#1A1A1A]",
+      "body": "text-base font-normal text-[#64748B]",
+      "small": "text-sm font-medium text-[#64748B]",
+      "caption": "text-xs font-bold tracking-[0.05em] uppercase text-[#64748B]"
+    }
+  },
+  "spacing_and_layout": {
+    "general": {
+      "screen_padding": "p-4 md:p-6",
+      "card_padding": "p-5",
+      "gap_small": "gap-2",
+      "gap_medium": "gap-4",
+      "gap_large": "gap-6"
+    },
+    "border_radius": {
+      "small": "rounded-md",
+      "medium": "rounded-xl",
+      "large": "rounded-2xl",
+      "sheet": "rounded-t-3xl",
+      "pill": "rounded-full"
+    },
+    "touch_targets": {
+      "minimum_height": "h-14",
+      "minimum_width": "w-14"
+    }
+  },
+  "components": {
+    "Map": {
+      "description": "Full-screen underlying layer using react-native-maps.",
+      "markers": {
+        "bus": "Primary Green circle with white bus icon",
+        "danfo": "Secondary Yellow circle with black van icon",
+        "keke": "Dark Gray circle with white tricycle icon"
+      }
+    },
+    "StickyHeader": {
+      "layout": "absolute top-0 left-0 right-0 z-50 p-4 pt-12 bg-white/90 backdrop-blur-md border-b border-[#E2E8F0]",
+      "elements": "Search bar (h-12 rounded-xl bg-[#F1F5F9] px-4) and horizontal scrolling FilterChips."
+    },
+    "FilterChip": {
+      "default": "px-4 py-2 rounded-full border border-[#E2E8F0] bg-white text-[#64748B] font-medium flex-row items-center gap-2",
+      "active": "px-4 py-2 rounded-full border border-[#008751] bg-[#E6F3EC] text-[#008751] font-bold flex-row items-center gap-2"
+    },
+    "BottomSheet": {
+      "layout": "absolute bottom-0 left-0 right-0 bg-white rounded-t-3xl shadow-[0_-8px_30px_rgba(0,0,0,0.12)] p-6 pb-8",
+      "handle": "w-12 h-1.5 bg-[#E2E8F0] rounded-full mx-auto mb-6"
+    },
+    "ReportFAB": {
+      "layout": "absolute bottom-6 right-6 w-16 h-16 rounded-full bg-[#008751] shadow-lg flex items-center justify-center z-50",
+      "icon": "Plus or Alert icon, white, 28px"
+    },
+    "RouteCard": {
+      "layout": "bg-white border border-[#E2E8F0] rounded-2xl p-5 mb-4 shadow-sm",
+      "header": "Flex row, Title (h3) and ETA badge (bg-yellow-100 text-yellow-800 rounded-md px-2 py-1)",
+      "body": "Origin to Destination timeline with dashed connecting line."
+    },
+    "CrowdIndicator": {
+      "layout": "flex-row gap-1 items-end",
+      "bars": "3 vertical bars of increasing height. Color changes based on status (Empty=1 green bar, Moderate=2 yellow bars, Packed=3 red bars)"
+    },
+    "QuickReportGrid": {
+      "layout": "grid grid-cols-2 gap-4 mt-4",
+      "button": "h-24 bg-[#F8F9FA] border border-[#E2E8F0] rounded-2xl flex flex-col items-center justify-center gap-2 active:bg-[#E6F3EC] active:border-[#008751]"
+    }
+  },
+  "icons": {
+    "library": "lucide-react-native",
+    "usage": {
+      "bus": "Bus",
+      "keke": "Bike / Car (custom SVG preferred)",
+      "danfo": "Van",
+      "shuttle": "BusFront",
+      "report": "Megaphone / AlertTriangle",
+      "profile": "User",
+      "map": "Map",
+      "routes": "Route"
+    }
+  },
+  "motion_and_interactions": {
+    "bottom_sheet": "Spring animation for smooth dragging and snapping.",
+    "buttons": "Opacity feedback on press (active:opacity-70) or scale down (active:scale-95).",
+    "map_markers": "Pulse animation for live moving vehicles."
+  },
+  "images": {
+    "onboarding_1": {
+      "url": "https://images.pexels.com/photos/36883970/pexels-photo-36883970.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "description": "Yellow tricycle (Keke) navigating a Lagos street. Use for 'Know your ride' onboarding screen.",
+      "category": "onboarding"
+    },
+    "onboarding_2": {
+      "url": "https://images.pexels.com/photos/37567064/pexels-photo-37567064.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "description": "Vibrant street scene featuring a yellow danfo bus. Use for 'Crowdsourced updates' onboarding screen.",
+      "category": "onboarding"
+    },
+    "onboarding_3": {
+      "url": "https://images.pexels.com/photos/17859087/pexels-photo-17859087.png?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "description": "People waiting at a bus stop. Use for 'Never wait aimlessly' onboarding screen.",
+      "category": "onboarding"
+    }
+  },
+  "accessibility_and_testing": {
+    "contrast": "Text over map must use solid background pills. Important ETAs must meet 4.5:1 ratio.",
+    "testing_attributes": {
+      "rule": "All interactive elements MUST include testID (React Native equivalent of data-testid).",
+      "examples": [
+        "testID='map-filter-bus-button'",
+        "testID='report-fab-button'",
+        "testID='route-card-item'",
+        "testID='submit-crowd-level-button'"
+      ]
+    }
+  }
+}
