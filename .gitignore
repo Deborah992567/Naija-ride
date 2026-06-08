@@ -1,82 +1,87 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
-
-# IDE and editors
+# =====================
+# IDEs
+# =====================
 .idea/
 .vscode/
 
+# =====================
 # Dependencies
+# =====================
 node_modules/
-/node_modules
-/.pnp
+.pnp
 .pnp.js
+.yarn/
 .yarn/install-state.gz
-.yarn/*
-!.yarn/patches
-!.yarn/plugins
-!.yarn/releases
-!.yarn/versions
 
-# Testing
-/coverage
+# =====================
+# Environment files (IMPORTANT)
+# =====================
+.env
+.env.*
+!.env.example
 
-# Next.js
-/.next/
-/out/
-next-env.d.ts
-*.tsbuildinfo
-
-# Production builds
-/build
-dist/
-dist
-
-# Environment files (comprehensive coverage)
-
-*token.json*
-*credentials.json*
-
-# Logs and debug files
+# =====================
+# Logs
+# =====================
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-.pnpm-debug.log*
-dump.rdb
+pnpm-debug.log*
 
-# System files
+# =====================
+# OS files
+# =====================
 .DS_Store
 *.pem
 
+# =====================
 # Python
+# =====================
 __pycache__/
-*pyc*
-venv/
+*.pyc
+*.pyo
+*.pyd
 .venv/
+venv/
 
-# Development tools
-chainlit.md
-.chainlit
-.ipynb_checkpoints/
-.ac
+# =====================
+# Build outputs
+# =====================
+dist/
+build/
+out/
+.next/
 
-# Deployment
-.vercel
+# =====================
+# Expo / React Native
+# =====================
+.expo/
+.expo-shared/
+.expo-router/
+web-build/
 
-# Data and databases
-agenthub/agents/youtube/db
+# =====================
+# Testing
+# =====================
+coverage/
 
-# Archive files and large assets
-**/*.zip
-**/*.tar.gz
-**/*.tar
-**/*.tgz
-*.pack
-*.deb
-*.dylib
+# =====================
+# Databases / local data
+# =====================
+*.db
+*.sqlite
+*.sqlite3
 
-# Build caches
+# =====================
+# Archives
+# =====================
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+
+# =====================
+# CI / deployment
+# =====================
+.vercel/
 .cache/
-
-memory/test_credentials.md
-
-# Mobile development
-android-sdk/
