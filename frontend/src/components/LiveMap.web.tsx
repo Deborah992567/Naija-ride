@@ -4,6 +4,7 @@ import { useMemo } from "react";
 import { StyleSheet, View, Text, TouchableOpacity, ScrollView } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import type { Report, Route } from "@/src/lib/api";
+import type { GeoPoint } from "@/src/lib/walking";
 import { vehicleMeta, colors } from "@/src/lib/theme";
 
 type Region = { latitude: number; longitude: number; latitudeDelta: number; longitudeDelta: number };
@@ -14,19 +15,21 @@ type Props = {
   routes: Route[];
   onMarkerPress?: (v: Report) => void;
   showRoutePolylines?: boolean;
+  walkingRoute?: GeoPoint[];
 };
 
-export default function LiveMap({ region, vehicles, routes, onMarkerPress }: Props) {
+export default function LiveMap({ region, vehicles, routes, onMarkerPress, walkingRoute = [] }: Props) {
   // Compute bounding box from routes + vehicles
   const points = useMemo(() => {
     const pts: { lat: number; lng: number }[] = [];
     routes.forEach((r) => r.stops.forEach((s) => pts.push({ lat: s.lat, lng: s.lng })));
     vehicles.forEach((v) => pts.push({ lat: v.lat, lng: v.lng }));
+    walkingRoute.forEach((p) => pts.push({ lat: p.latitude, lng: p.longitude }));
     if (pts.length === 0) {
       pts.push({ lat: region.latitude, lng: region.longitude });
     }
     return pts;
-  }, [routes, vehicles, region]);
+  }, [routes, vehicles, walkingRoute, region]);
 
   const bounds = useMemo(() => {
     const lats = points.map((p) => p.lat);
@@ -83,6 +86,12 @@ export default function LiveMap({ region, vehicles, routes, onMarkerPress }: Pro
                 />
               )),
             )}
+            {walkingRoute.map((point, i) => (
+              <View
+                key={`walking-point-${i}`}
+                style={[styles.walkingPoint, { left: projX(point.longitude, W) - 3, top: projY(point.latitude, H) - 3 }]}
+              />
+            ))}
             {vehicles.map((v) => {
               const meta = vehicleMeta[v.vehicle_type] || vehicleMeta.bus;
               return (
@@ -126,6 +135,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff",
     borderWidth: 2,
   },
+  walkingPoint: { position: "absolute", width: 6, height: 6, borderRadius: 3, backgroundColor: "#2563EB", opacity: 0.9 },
   vehicle: {
     position: "absolute",
     width: 32,

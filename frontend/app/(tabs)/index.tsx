@@ -4,12 +4,14 @@ import { View, Text, StyleSheet, TouchableOpacity, TextInput, ActivityIndicator 
 import { useFocusEffect, useRouter } from "expo-router";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
+import * as Location from "expo-location";
 import LiveMap from "@/src/components/LiveMap";
 import FilterChips from "@/src/components/FilterChips";
 import CrowdBars from "@/src/components/CrowdBars";
 import { api, type Report, type Route } from "@/src/lib/api";
 import { colors, radii, spacing, vehicleMeta } from "@/src/lib/theme";
 import { formatRelative } from "@/src/lib/time";
+import { formatWalkingDistance, getWalkingRoute, type GeoPoint, type WalkingRoute } from "@/src/lib/walking";
 
 const FILTERS = [
   { key: "all", label: "All", icon: "apps" as const },
@@ -28,6 +30,10 @@ export default function MapScreen() {
   const [vehicles, setVehicles] = useState<Report[]>([]);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<Report | null>(null);
+  const [walkingRoute, setWalkingRoute] = useState<WalkingRoute | null>(null);
+  const [walkingTo, setWalkingTo] = useState<string | null>(null);
+  const [walkingLoading, setWalkingLoading] = useState(false);
+  const [walkingError, setWalkingError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -84,12 +90,41 @@ export default function MapScreen() {
     [vehicles, filter],
   );
 
+  async function walkToNearestStop() {
+    const stops = filteredRoutes.flatMap((route) => route.stops);
+    if (!stops.length) return;
+    setWalkingLoading(true);
+    setWalkingError(null);
+    try {
+      let permission = await Location.getForegroundPermissionsAsync();
+      if (permission.status !== "granted") permission = await Location.requestForegroundPermissionsAsync();
+      if (permission.status !== "granted") throw new Error("Allow location to get walking directions.");
+      const location = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+      const from: GeoPoint = { latitude: location.coords.latitude, longitude: location.coords.longitude };
+      const closest = stops.reduce((best, stop) => {
+        const bestDistance = Math.hypot(best.lat - from.latitude, best.lng - from.longitude);
+        const distance = Math.hypot(stop.lat - from.latitude, stop.lng - from.longitude);
+        return distance < bestDistance ? stop : best;
+      });
+      const route = await getWalkingRoute(from, { latitude: closest.lat, longitude: closest.lng });
+      setWalkingRoute(route);
+      setWalkingTo(closest.name);
+    } catch (error) {
+      setWalkingRoute(null);
+      setWalkingTo(null);
+      setWalkingError(error instanceof Error ? error.message : "Could not get walking directions.");
+    } finally {
+      setWalkingLoading(false);
+    }
+  }
+
   return (
     <View style={styles.root}>
       <LiveMap
         region={region}
         vehicles={filteredVehicles}
         routes={filteredRoutes}
+        walkingRoute={walkingRoute?.coordinates}
         onMarkerPress={(v) => setSelected(v)}
       />
 
@@ -128,6 +163,22 @@ export default function MapScreen() {
             </Text>
           </>
         )}
+      </View>
+
+      <View style={[styles.walkWrap, { top: insets.top + 178 }]}>
+        {walkingRoute && walkingTo ? (
+          <TouchableOpacity style={styles.walkResult} onPress={() => { setWalkingRoute(null); setWalkingTo(null); }} testID="walking-route-clear">
+            <Ionicons name="walk" size={18} color="#2563EB" />
+            <Text style={styles.walkResultText}>Walk {formatWalkingDistance(walkingRoute.distanceMeters)} · {Math.max(1, Math.round(walkingRoute.durationSeconds / 60))} min to {walkingTo}</Text>
+            <Ionicons name="close" size={16} color={colors.textSecondary} />
+          </TouchableOpacity>
+        ) : (
+          <TouchableOpacity style={styles.walkButton} onPress={walkToNearestStop} disabled={walkingLoading} testID="walking-route-button">
+            {walkingLoading ? <ActivityIndicator size="small" color="#2563EB" /> : <Ionicons name="walk" size={18} color="#2563EB" />}
+            <Text style={styles.walkButtonText}>{walkingLoading ? "Finding walking route…" : "Walk to nearest stop"}</Text>
+          </TouchableOpacity>
+        )}
+        {walkingError ? <Text style={styles.walkError}>{walkingError}</Text> : null}
       </View>
 
       {/* Selected vehicle bottom sheet */}
@@ -246,6 +297,12 @@ const styles = StyleSheet.create({
   },
   pulse: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.primary },
   liveText: { color: colors.textPrimary, fontSize: 12, fontWeight: "700" },
+  walkWrap: { position: "absolute", alignSelf: "center", alignItems: "center", maxWidth: "88%" },
+  walkButton: { flexDirection: "row", alignItems: "center", gap: 7, backgroundColor: "#fff", paddingHorizontal: 14, paddingVertical: 10, borderRadius: 999, borderWidth: 1, borderColor: "#BFDBFE", shadowColor: "#000", shadowOpacity: 0.08, shadowRadius: 8, shadowOffset: { width: 0, height: 4 }, elevation: 3 },
+  walkButtonText: { color: "#1D4ED8", fontSize: 12, fontWeight: "800" },
+  walkResult: { flexDirection: "row", alignItems: "center", gap: 7, backgroundColor: "#EFF6FF", paddingHorizontal: 14, paddingVertical: 10, borderRadius: 999, borderWidth: 1, borderColor: "#93C5FD" },
+  walkResultText: { color: "#1E3A8A", fontSize: 12, fontWeight: "800", flexShrink: 1 },
+  walkError: { color: colors.delayed, fontSize: 11, fontWeight: "700", marginTop: 6, textAlign: "center", backgroundColor: "rgba(255,255,255,0.92)", paddingHorizontal: 8, borderRadius: 6 },
   scrollHint: {
     position: "absolute",
     alignSelf: "center",

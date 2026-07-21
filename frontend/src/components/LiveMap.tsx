@@ -4,6 +4,7 @@ import { StyleSheet, View, Text } from "react-native";
 import MapView, { Marker, Polyline, PROVIDER_DEFAULT, Region } from "react-native-maps";
 import { Ionicons } from "@expo/vector-icons";
 import type { Report, Route } from "@/src/lib/api";
+import type { GeoPoint } from "@/src/lib/walking";
 import { vehicleMeta, colors } from "@/src/lib/theme";
 
 type Props = {
@@ -13,9 +14,10 @@ type Props = {
   routes: Route[];
   onMarkerPress?: (v: Report) => void;
   showRoutePolylines?: boolean;
+  walkingRoute?: GeoPoint[];
 };
 
-export default function LiveMap({ region, onRegionChange, vehicles, routes, onMarkerPress, showRoutePolylines = true }: Props) {
+export default function LiveMap({ region, onRegionChange, vehicles, routes, onMarkerPress, showRoutePolylines = true, walkingRoute = [] }: Props) {
   const polylines = useMemo(
     () => routes.filter((r) => r.stops.length >= 2).map((r) => ({
       id: r.route_id,
@@ -47,6 +49,9 @@ export default function LiveMap({ region, onRegionChange, vehicles, routes, onMa
               lineDashPattern={[6, 4]}
             />
           ))}
+        {walkingRoute.length >= 2 && (
+          <Polyline coordinates={walkingRoute} strokeColor="#2563EB" strokeWidth={5} lineDashPattern={[2, 7]} />
+        )}
         {routes.flatMap((r) =>
           r.stops.map((s, i) => (
             <Marker
