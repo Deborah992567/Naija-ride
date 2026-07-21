@@ -16,20 +16,22 @@ type Props = {
   onMarkerPress?: (v: Report) => void;
   showRoutePolylines?: boolean;
   walkingRoute?: GeoPoint[];
+  walkingRoutes?: GeoPoint[][];
 };
 
-export default function LiveMap({ region, vehicles, routes, onMarkerPress, walkingRoute = [] }: Props) {
+export default function LiveMap({ region, vehicles, routes, onMarkerPress, walkingRoute = [], walkingRoutes = [] }: Props) {
   // Compute bounding box from routes + vehicles
   const points = useMemo(() => {
     const pts: { lat: number; lng: number }[] = [];
     routes.forEach((r) => r.stops.forEach((s) => pts.push({ lat: s.lat, lng: s.lng })));
     vehicles.forEach((v) => pts.push({ lat: v.lat, lng: v.lng }));
     walkingRoute.forEach((p) => pts.push({ lat: p.latitude, lng: p.longitude }));
+    walkingRoutes.flat().forEach((p) => pts.push({ lat: p.latitude, lng: p.longitude }));
     if (pts.length === 0) {
       pts.push({ lat: region.latitude, lng: region.longitude });
     }
     return pts;
-  }, [routes, vehicles, walkingRoute, region]);
+  }, [routes, vehicles, walkingRoute, walkingRoutes, region]);
 
   const bounds = useMemo(() => {
     const lats = points.map((p) => p.lat);
@@ -91,6 +93,9 @@ export default function LiveMap({ region, vehicles, routes, onMarkerPress, walki
                 key={`walking-point-${i}`}
                 style={[styles.walkingPoint, { left: projX(point.longitude, W) - 3, top: projY(point.latitude, H) - 3 }]}
               />
+            ))}
+            {walkingRoutes.flat().map((point, i) => (
+              <View key={`journey-walking-point-${i}`} style={[styles.walkingPoint, { left: projX(point.longitude, W) - 3, top: projY(point.latitude, H) - 3 }]} />
             ))}
             {vehicles.map((v) => {
               const meta = vehicleMeta[v.vehicle_type] || vehicleMeta.bus;

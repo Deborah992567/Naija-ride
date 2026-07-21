@@ -1,6 +1,6 @@
 // Map screen: sticky header with search + filter chips, live map fills the rest, FAB to report.
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { View, Text, StyleSheet, TouchableOpacity, TextInput, ActivityIndicator } from "react-native";
+import { View, Text, StyleSheet, TouchableOpacity, TextInput, ActivityIndicator, Modal, ScrollView } from "react-native";
 import { useFocusEffect, useRouter } from "expo-router";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -12,6 +12,7 @@ import { api, type Report, type Route } from "@/src/lib/api";
 import { colors, radii, spacing, vehicleMeta } from "@/src/lib/theme";
 import { formatRelative } from "@/src/lib/time";
 import { formatWalkingDistance, getWalkingRoute, type GeoPoint, type WalkingRoute } from "@/src/lib/walking";
+import { CAMPUS_DESTINATIONS, type CampusDestination } from "@/src/lib/destinations";
 
 const FILTERS = [
   { key: "all", label: "All", icon: "apps" as const },
@@ -20,6 +21,16 @@ const FILTERS = [
   { key: "keke", label: "Keke", icon: "bicycle" as const },
   { key: "shuttle", label: "Shuttle", icon: "school" as const },
 ];
+
+type Journey = {
+  destination: CampusDestination;
+  route: Route;
+  pickup: Route["stops"][number];
+  dropoff: Route["stops"][number];
+  toPickup: WalkingRoute;
+  fromDropoff: WalkingRoute;
+  rideMinutes: number | null;
+};
 
 export default function MapScreen() {
   const router = useRouter();
@@ -34,6 +45,11 @@ export default function MapScreen() {
   const [walkingTo, setWalkingTo] = useState<string | null>(null);
   const [walkingLoading, setWalkingLoading] = useState(false);
   const [walkingError, setWalkingError] = useState<string | null>(null);
+  const [plannerOpen, setPlannerOpen] = useState(false);
+  const [plannerQuery, setPlannerQuery] = useState("");
+  const [journey, setJourney] = useState<Journey | null>(null);
+  const [journeyLoading, setJourneyLoading] = useState(false);
+  const [journeyError, setJourneyError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -118,6 +134,56 @@ export default function MapScreen() {
     }
   }
 
+  async function planJourney(destination: CampusDestination) {
+    const campusRoutes = routes.filter((route) => route.city === "Campus" && route.stops.length >= 2);
+    const availableRoutes = campusRoutes.length ? campusRoutes : routes.filter((route) => route.stops.length >= 2);
+    if (!availableRoutes.length) {
+      setJourneyError("No shuttle route is available yet.");
+      return;
+    }
+    setJourneyLoading(true);
+    setJourneyError(null);
+    try {
+      let permission = await Location.getForegroundPermissionsAsync();
+      if (permission.status !== "granted") permission = await Location.requestForegroundPermissionsAsync();
+      if (permission.status !== "granted") throw new Error("Allow location to plan your journey.");
+      const location = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+      const from: GeoPoint = { latitude: location.coords.latitude, longitude: location.coords.longitude };
+      const closestStop = (stops: Route["stops"], point: GeoPoint) =>
+        stops.reduce((best, stop) =>
+          Math.hypot(stop.lat - point.latitude, stop.lng - point.longitude) < Math.hypot(best.lat - point.latitude, best.lng - point.longitude)
+            ? stop
+            : best,
+        );
+      const route = availableRoutes.reduce((best, candidate) => {
+        const candidateDropoff = closestStop(candidate.stops, destination);
+        const bestDropoff = closestStop(best.stops, destination);
+        return Math.hypot(candidateDropoff.lat - destination.latitude, candidateDropoff.lng - destination.longitude) < Math.hypot(bestDropoff.lat - destination.latitude, bestDropoff.lng - destination.longitude)
+          ? candidate
+          : best;
+      });
+      const pickup = closestStop(route.stops, from);
+      const dropoff = closestStop(route.stops, destination);
+      const [toPickup, fromDropoff, eta] = await Promise.all([
+        getWalkingRoute(from, { latitude: pickup.lat, longitude: pickup.lng }),
+        getWalkingRoute({ latitude: dropoff.lat, longitude: dropoff.lng }, destination),
+        api.eta(route.route_id, route.stops.indexOf(dropoff)).catch(() => null),
+      ]);
+      setJourney({ destination, route, pickup, dropoff, toPickup, fromDropoff, rideMinutes: eta?.eta_minutes ?? null });
+      setWalkingRoute(null);
+      setWalkingTo(null);
+      setPlannerOpen(false);
+    } catch (error) {
+      setJourneyError(error instanceof Error ? error.message : "Could not plan this journey.");
+    } finally {
+      setJourneyLoading(false);
+    }
+  }
+
+  const plannerDestinations = CAMPUS_DESTINATIONS.filter((destination) =>
+    `${destination.name} ${destination.area}`.toLowerCase().includes(plannerQuery.toLowerCase()),
+  );
+
   return (
     <View style={styles.root}>
       <LiveMap
@@ -125,6 +191,7 @@ export default function MapScreen() {
         vehicles={filteredVehicles}
         routes={filteredRoutes}
         walkingRoute={walkingRoute?.coordinates}
+        walkingRoutes={journey ? [journey.toPickup.coordinates, journey.fromDropoff.coordinates] : undefined}
         onMarkerPress={(v) => setSelected(v)}
       />
 
@@ -181,6 +248,24 @@ export default function MapScreen() {
         {walkingError ? <Text style={styles.walkError}>{walkingError}</Text> : null}
       </View>
 
+      <View style={[styles.planWrap, { bottom: insets.bottom + 94 }]}>
+        {journey ? (
+          <TouchableOpacity style={styles.journeyCard} onPress={() => setPlannerOpen(true)} testID="journey-summary-button">
+            <View style={styles.journeyIcon}><Ionicons name="navigate" size={18} color="#fff" /></View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.journeyTitle}>To {journey.destination.name}</Text>
+              <Text style={styles.journeySub}>Walk → {journey.route.name.replace("UNILAG Campus ", "")} → walk · ₦{journey.route.fare ?? "—"}</Text>
+            </View>
+            <Ionicons name="chevron-up" size={18} color={colors.primary} />
+          </TouchableOpacity>
+        ) : (
+          <TouchableOpacity style={styles.planButton} onPress={() => { setJourneyError(null); setPlannerOpen(true); }} testID="journey-planner-button">
+            <Ionicons name="navigate" size={18} color="#fff" />
+            <Text style={styles.planButtonText}>Plan a journey</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+
       {/* Selected vehicle bottom sheet */}
       {selected ? (
         <VehicleSheet report={selected} onClose={() => setSelected(null)} onSeeRoute={() => {
@@ -196,15 +281,67 @@ export default function MapScreen() {
 
       {/* Report FAB */}
       <TouchableOpacity
-        style={[styles.fab, { bottom: insets.bottom + 88 }]}
+        style={[styles.fab, { bottom: insets.bottom + 164 }]}
         onPress={() => router.push("/(tabs)/report")}
         testID="report-fab-button"
         activeOpacity={0.9}
       >
         <Ionicons name="megaphone" size={24} color="#fff" />
       </TouchableOpacity>
+
+      <JourneyPlanner
+        visible={plannerOpen}
+        destinations={plannerDestinations}
+        query={plannerQuery}
+        onQueryChange={setPlannerQuery}
+        onClose={() => setPlannerOpen(false)}
+        onSelect={planJourney}
+        loading={journeyLoading}
+        error={journeyError}
+        journey={journey}
+        onClearJourney={() => { setJourney(null); setPlannerOpen(false); }}
+      />
     </View>
   );
+}
+
+function JourneyPlanner({ visible, destinations, query, onQueryChange, onClose, onSelect, loading, error, journey, onClearJourney }: { visible: boolean; destinations: CampusDestination[]; query: string; onQueryChange: (value: string) => void; onClose: () => void; onSelect: (destination: CampusDestination) => void; loading: boolean; error: string | null; journey: Journey | null; onClearJourney: () => void }) {
+  const totalWalkMinutes = journey ? Math.max(1, Math.round((journey.toPickup.durationSeconds + journey.fromDropoff.durationSeconds) / 60)) : 0;
+  return (
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+      <View style={styles.modalBackdrop}>
+        <View style={styles.plannerSheet}>
+          <View style={styles.handle} />
+          <View style={styles.plannerHeader}>
+            <View><Text style={styles.plannerTitle}>{journey ? "Your journey" : "Where are you going?"}</Text><Text style={styles.plannerSub}>{journey ? "Your walk–ride–walk plan" : "Choose a UNILAG destination"}</Text></View>
+            <TouchableOpacity onPress={onClose} style={styles.closeBtn} testID="journey-planner-close"><Ionicons name="close" size={20} color={colors.textPrimary} /></TouchableOpacity>
+          </View>
+          {journey ? (
+            <View style={styles.itinerary}>
+              <ItineraryStep icon="walk" label={`Walk to ${journey.pickup.name}`} detail={`${formatWalkingDistance(journey.toPickup.distanceMeters)} · ${Math.max(1, Math.round(journey.toPickup.durationSeconds / 60))} min`} />
+              <ItineraryStep icon="bus" label={`Ride ${journey.route.name}`} detail={`${journey.pickup.name} → ${journey.dropoff.name}${journey.rideMinutes != null ? ` · vehicle ETA ${journey.rideMinutes} min` : " · live ETA unavailable"}`} />
+              <ItineraryStep icon="walk" label={`Walk to ${journey.destination.name}`} detail={`${formatWalkingDistance(journey.fromDropoff.distanceMeters)} · ${Math.max(1, Math.round(journey.fromDropoff.durationSeconds / 60))} min`} />
+              <View style={styles.totalRow}><Text style={styles.totalText}>Walking {totalWalkMinutes} min</Text><Text style={styles.totalText}>Fare ₦{journey.route.fare ?? "—"}</Text></View>
+              <TouchableOpacity style={styles.clearJourneyBtn} onPress={onClearJourney} testID="journey-clear-button"><Text style={styles.clearJourneyText}>Clear journey</Text></TouchableOpacity>
+            </View>
+          ) : (
+            <>
+              <View style={styles.destinationSearch}><Ionicons name="search" size={18} color={colors.textSecondary} /><TextInput value={query} onChangeText={onQueryChange} placeholder="Search faculty, hostel or library" placeholderTextColor={colors.textSecondary} style={styles.destinationInput} testID="journey-destination-search" /></View>
+              <ScrollView contentContainerStyle={styles.destinationList} showsVerticalScrollIndicator={false}>
+                {destinations.map((destination) => <TouchableOpacity key={destination.id} style={styles.destinationRow} onPress={() => onSelect(destination)} disabled={loading} testID={`journey-destination-${destination.id}`}><View style={styles.destinationIcon}><Ionicons name={destination.icon} size={18} color={colors.primary} /></View><View style={{ flex: 1 }}><Text style={styles.destinationName}>{destination.name}</Text><Text style={styles.destinationArea}>{destination.area}</Text></View><Ionicons name="chevron-forward" size={18} color={colors.textSecondary} /></TouchableOpacity>)}
+              </ScrollView>
+            </>
+          )}
+          {loading ? <View style={styles.planning}><ActivityIndicator color={colors.primary} /><Text style={styles.planningText}>Finding your best walk–ride–walk journey…</Text></View> : null}
+          {error ? <Text style={styles.plannerError}>{error}</Text> : null}
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function ItineraryStep({ icon, label, detail }: { icon: keyof typeof Ionicons.glyphMap; label: string; detail: string }) {
+  return <View style={styles.itineraryStep}><View style={styles.stepIcon}><Ionicons name={icon} size={17} color="#2563EB" /></View><View style={{ flex: 1 }}><Text style={styles.stepLabel}>{label}</Text><Text style={styles.stepDetail}>{detail}</Text></View></View>;
 }
 
 function VehicleSheet({ report, onClose, onSeeRoute }: { report: Report; onClose: () => void; onSeeRoute: () => void }) {
@@ -303,6 +440,37 @@ const styles = StyleSheet.create({
   walkResult: { flexDirection: "row", alignItems: "center", gap: 7, backgroundColor: "#EFF6FF", paddingHorizontal: 14, paddingVertical: 10, borderRadius: 999, borderWidth: 1, borderColor: "#93C5FD" },
   walkResultText: { color: "#1E3A8A", fontSize: 12, fontWeight: "800", flexShrink: 1 },
   walkError: { color: colors.delayed, fontSize: 11, fontWeight: "700", marginTop: 6, textAlign: "center", backgroundColor: "rgba(255,255,255,0.92)", paddingHorizontal: 8, borderRadius: 6 },
+  planWrap: { position: "absolute", left: 16, right: 92 },
+  planButton: { minHeight: 52, borderRadius: radii.pill, backgroundColor: colors.primary, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingHorizontal: 16, shadowColor: colors.primary, shadowOpacity: 0.28, shadowRadius: 10, shadowOffset: { width: 0, height: 5 }, elevation: 5 },
+  planButtonText: { color: "#fff", fontSize: 14, fontWeight: "900" },
+  journeyCard: { minHeight: 56, backgroundColor: "#fff", borderWidth: 1, borderColor: "#BBF7D0", borderRadius: radii.lg, padding: 10, flexDirection: "row", alignItems: "center", gap: 9, shadowColor: "#000", shadowOpacity: 0.08, shadowRadius: 8, shadowOffset: { width: 0, height: 3 }, elevation: 4 },
+  journeyIcon: { width: 34, height: 34, borderRadius: 17, alignItems: "center", justifyContent: "center", backgroundColor: colors.primary },
+  journeyTitle: { color: colors.textPrimary, fontSize: 12, fontWeight: "900" },
+  journeySub: { color: colors.textSecondary, fontSize: 10, fontWeight: "700", marginTop: 2 },
+  modalBackdrop: { flex: 1, justifyContent: "flex-end", backgroundColor: "rgba(15,23,42,0.38)" },
+  plannerSheet: { minHeight: 410, maxHeight: "80%", backgroundColor: "#fff", borderTopLeftRadius: 28, borderTopRightRadius: 28, paddingHorizontal: spacing.lg, paddingTop: 10, paddingBottom: 26 },
+  plannerHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 18 },
+  plannerTitle: { color: colors.textPrimary, fontSize: 21, fontWeight: "900" },
+  plannerSub: { color: colors.textSecondary, fontSize: 12, fontWeight: "600", marginTop: 2 },
+  destinationSearch: { height: 50, borderRadius: radii.lg, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.input, paddingHorizontal: 13, flexDirection: "row", alignItems: "center", gap: 9 },
+  destinationInput: { flex: 1, color: colors.textPrimary, fontSize: 14, paddingVertical: 0 },
+  destinationList: { paddingTop: 10, paddingBottom: 12 },
+  destinationRow: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: colors.border },
+  destinationIcon: { width: 38, height: 38, borderRadius: 19, alignItems: "center", justifyContent: "center", backgroundColor: colors.primaryLight },
+  destinationName: { color: colors.textPrimary, fontSize: 14, fontWeight: "800" },
+  destinationArea: { color: colors.textSecondary, fontSize: 12, marginTop: 2 },
+  planning: { position: "absolute", left: spacing.lg, right: spacing.lg, bottom: 26, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 9, padding: 13, borderRadius: radii.lg, backgroundColor: colors.primaryLight },
+  planningText: { color: colors.primaryDark, fontSize: 12, fontWeight: "800" },
+  plannerError: { color: colors.delayed, fontSize: 12, fontWeight: "700", textAlign: "center", marginTop: 12 },
+  itinerary: { gap: 10 },
+  itineraryStep: { flexDirection: "row", gap: 12, padding: 12, borderWidth: 1, borderColor: colors.border, borderRadius: radii.lg, backgroundColor: colors.card },
+  stepIcon: { width: 30, height: 30, borderRadius: 15, alignItems: "center", justifyContent: "center", backgroundColor: "#EFF6FF" },
+  stepLabel: { color: colors.textPrimary, fontSize: 13, fontWeight: "800" },
+  stepDetail: { color: colors.textSecondary, fontSize: 11, lineHeight: 16, marginTop: 2 },
+  totalRow: { flexDirection: "row", justifyContent: "space-between", paddingTop: 4 },
+  totalText: { color: colors.primaryDark, fontSize: 13, fontWeight: "900" },
+  clearJourneyBtn: { alignItems: "center", paddingVertical: 12, marginTop: 2 },
+  clearJourneyText: { color: colors.delayed, fontSize: 13, fontWeight: "800" },
   scrollHint: {
     position: "absolute",
     alignSelf: "center",

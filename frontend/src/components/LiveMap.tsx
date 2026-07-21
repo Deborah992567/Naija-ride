@@ -15,9 +15,10 @@ type Props = {
   onMarkerPress?: (v: Report) => void;
   showRoutePolylines?: boolean;
   walkingRoute?: GeoPoint[];
+  walkingRoutes?: GeoPoint[][];
 };
 
-export default function LiveMap({ region, onRegionChange, vehicles, routes, onMarkerPress, showRoutePolylines = true, walkingRoute = [] }: Props) {
+export default function LiveMap({ region, onRegionChange, vehicles, routes, onMarkerPress, showRoutePolylines = true, walkingRoute = [], walkingRoutes = [] }: Props) {
   const polylines = useMemo(
     () => routes.filter((r) => r.stops.length >= 2).map((r) => ({
       id: r.route_id,
@@ -49,9 +50,9 @@ export default function LiveMap({ region, onRegionChange, vehicles, routes, onMa
               lineDashPattern={[6, 4]}
             />
           ))}
-        {walkingRoute.length >= 2 && (
-          <Polyline coordinates={walkingRoute} strokeColor="#2563EB" strokeWidth={5} lineDashPattern={[2, 7]} />
-        )}
+        {[walkingRoute, ...walkingRoutes].filter((route) => route.length >= 2).map((route, index) => (
+          <Polyline key={`walking-${index}`} coordinates={route} strokeColor="#2563EB" strokeWidth={5} lineDashPattern={[2, 7]} />
+        ))}
         {routes.flatMap((r) =>
           r.stops.map((s, i) => (
             <Marker
