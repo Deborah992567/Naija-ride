@@ -50,6 +50,7 @@ export default function MapScreen() {
   const [journey, setJourney] = useState<Journey | null>(null);
   const [journeyLoading, setJourneyLoading] = useState(false);
   const [journeyError, setJourneyError] = useState<string | null>(null);
+  const [arrivalTime, setArrivalTime] = useState("08:00");
 
   const refresh = useCallback(async () => {
     try {
@@ -300,13 +301,17 @@ export default function MapScreen() {
         error={journeyError}
         journey={journey}
         onClearJourney={() => { setJourney(null); setPlannerOpen(false); }}
+        arrivalTime={arrivalTime}
+        onArrivalTimeChange={setArrivalTime}
       />
     </View>
   );
 }
 
-function JourneyPlanner({ visible, destinations, query, onQueryChange, onClose, onSelect, loading, error, journey, onClearJourney }: { visible: boolean; destinations: CampusDestination[]; query: string; onQueryChange: (value: string) => void; onClose: () => void; onSelect: (destination: CampusDestination) => void; loading: boolean; error: string | null; journey: Journey | null; onClearJourney: () => void }) {
+function JourneyPlanner({ visible, destinations, query, onQueryChange, onClose, onSelect, loading, error, journey, onClearJourney, arrivalTime, onArrivalTimeChange }: { visible: boolean; destinations: CampusDestination[]; query: string; onQueryChange: (value: string) => void; onClose: () => void; onSelect: (destination: CampusDestination) => void; loading: boolean; error: string | null; journey: Journey | null; onClearJourney: () => void; arrivalTime: string; onArrivalTimeChange: (time: string) => void }) {
   const totalWalkMinutes = journey ? Math.max(1, Math.round((journey.toPickup.durationSeconds + journey.fromDropoff.durationSeconds) / 60)) : 0;
+  const rideMinutes = journey ? journey.rideMinutes ?? Math.max(3, Math.abs(journey.route.stops.indexOf(journey.dropoff) - journey.route.stops.indexOf(journey.pickup)) * 3) : 0;
+  const leaveBy = journey ? getLeaveBy(arrivalTime, totalWalkMinutes + rideMinutes + 5) : null;
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <View style={styles.modalBackdrop}>
@@ -322,6 +327,11 @@ function JourneyPlanner({ visible, destinations, query, onQueryChange, onClose, 
               <ItineraryStep icon="bus" label={`Ride ${journey.route.name}`} detail={`${journey.pickup.name} → ${journey.dropoff.name}${journey.rideMinutes != null ? ` · vehicle ETA ${journey.rideMinutes} min` : " · live ETA unavailable"}`} />
               <ItineraryStep icon="walk" label={`Walk to ${journey.destination.name}`} detail={`${formatWalkingDistance(journey.fromDropoff.distanceMeters)} · ${Math.max(1, Math.round(journey.fromDropoff.durationSeconds / 60))} min`} />
               <View style={styles.totalRow}><Text style={styles.totalText}>Walking {totalWalkMinutes} min</Text><Text style={styles.totalText}>Fare ₦{journey.route.fare ?? "—"}</Text></View>
+              <View style={styles.arrivalCard}>
+                <Text style={styles.arrivalLabel}>I need to arrive by</Text>
+                <View style={styles.timeRow}>{["08:00", "10:00", "12:00", "14:00", "16:00"].map((time) => <TouchableOpacity key={time} onPress={() => onArrivalTimeChange(time)} style={[styles.timeChip, arrivalTime === time && styles.timeChipActive]} testID={`arrival-time-${time.replace(":", "-")}`}><Text style={[styles.timeChipText, arrivalTime === time && styles.timeChipTextActive]}>{time}</Text></TouchableOpacity>)}</View>
+                <View style={styles.leaveByRow}><Ionicons name="alarm" size={18} color={leaveBy?.leaveNow ? colors.delayed : colors.primary} /><View style={{ flex: 1 }}><Text style={[styles.leaveByTitle, { color: leaveBy?.leaveNow ? colors.delayed : colors.primaryDark }]}>{leaveBy?.leaveNow ? "Leave now" : `Leave by ${leaveBy?.time}`}</Text><Text style={styles.leaveBySub}>{leaveBy?.leaveNow ? `Your journey needs about ${totalWalkMinutes + rideMinutes + 5} min, including a 5 min buffer.` : `Includes ${totalWalkMinutes + rideMinutes + 5} min for walking, ride and a 5 min buffer.`}</Text></View></View>
+              </View>
               <TouchableOpacity style={styles.clearJourneyBtn} onPress={onClearJourney} testID="journey-clear-button"><Text style={styles.clearJourneyText}>Clear journey</Text></TouchableOpacity>
             </View>
           ) : (
@@ -338,6 +348,16 @@ function JourneyPlanner({ visible, destinations, query, onQueryChange, onClose, 
       </View>
     </Modal>
   );
+}
+
+function getLeaveBy(arrivalTime: string, travelMinutes: number) {
+  const [hours, minutes] = arrivalTime.split(":").map(Number);
+  const arrival = new Date();
+  arrival.setHours(hours, minutes, 0, 0);
+  if (arrival.getTime() < Date.now()) arrival.setDate(arrival.getDate() + 1);
+  const leave = new Date(arrival.getTime() - travelMinutes * 60 * 1000);
+  const leaveNow = leave.getTime() <= Date.now();
+  return { leaveNow, time: leave.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) };
 }
 
 function ItineraryStep({ icon, label, detail }: { icon: keyof typeof Ionicons.glyphMap; label: string; detail: string }) {
@@ -469,6 +489,16 @@ const styles = StyleSheet.create({
   stepDetail: { color: colors.textSecondary, fontSize: 11, lineHeight: 16, marginTop: 2 },
   totalRow: { flexDirection: "row", justifyContent: "space-between", paddingTop: 4 },
   totalText: { color: colors.primaryDark, fontSize: 13, fontWeight: "900" },
+  arrivalCard: { padding: 12, borderRadius: radii.lg, backgroundColor: colors.primaryLight, gap: 10 },
+  arrivalLabel: { color: colors.primaryDark, fontSize: 12, fontWeight: "800" },
+  timeRow: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
+  timeChip: { paddingVertical: 7, paddingHorizontal: 9, borderRadius: radii.pill, backgroundColor: "#fff", borderWidth: 1, borderColor: "#BBE7D0" },
+  timeChipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
+  timeChipText: { color: colors.primaryDark, fontSize: 11, fontWeight: "800" },
+  timeChipTextActive: { color: "#fff" },
+  leaveByRow: { flexDirection: "row", gap: 9, alignItems: "flex-start", borderTopWidth: 1, borderTopColor: "#BDE5D0", paddingTop: 10 },
+  leaveByTitle: { fontSize: 14, fontWeight: "900" },
+  leaveBySub: { color: colors.textSecondary, fontSize: 11, lineHeight: 15, marginTop: 2 },
   clearJourneyBtn: { alignItems: "center", paddingVertical: 12, marginTop: 2 },
   clearJourneyText: { color: colors.delayed, fontSize: 13, fontWeight: "800" },
   scrollHint: {
