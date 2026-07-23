@@ -47,6 +47,14 @@ export default function TabsLayout() {
         }}
       />
       <Tabs.Screen
+        name="drive"
+        options={{
+          title: "Drive",
+          tabBarIcon: ({ color, size }) => <Ionicons name="bus" size={size} color={color} />,
+          tabBarButtonTestID: "tab-drive",
+        }}
+      />
+      <Tabs.Screen
         name="profile"
         options={{
           title: "Profile",

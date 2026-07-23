@@ -29,6 +29,7 @@
     },
     "plugins": [
       "expo-router",
+      "expo-notifications" ,
       [
         "expo-splash-screen",
         {
@@ -45,6 +46,7 @@
           "locationAlwaysAndWhenInUsePermission": "Share your location to report nearby vehicles"
         }
       ]
+      
     ],
     "experiments": {
       "typedRoutes": true
