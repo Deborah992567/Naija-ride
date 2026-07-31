@@ -1,4 +1,4 @@
-// Routes list — searchable, filterable by vehicle type.
+// Routes list — searchable, filterable by vehicle type, with follow pins.
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl, TextInput, ActivityIndicator } from "react-native";
 import { useRouter } from "expo-router";
@@ -6,6 +6,8 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import FilterChips from "@/src/components/FilterChips";
 import { api, type Route } from "@/src/lib/api";
+import { useAuth } from "@/src/lib/auth";
+import { loadFollowsFromServer, toggleFollow } from "@/src/lib/favorites";
 import { colors, radii, spacing, vehicleMeta } from "@/src/lib/theme";
 
 const FILTERS = [
@@ -18,16 +20,19 @@ const FILTERS = [
 
 export default function RoutesScreen() {
   const router = useRouter();
+  const { user } = useAuth();
   const [cityFilter, setCityFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [routes, setRoutes] = useState<Route[]>([]);
+  const [following, setFollowing] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async () => {
     try {
-      const r = await api.listRoutes();
+      const [r, ids] = await Promise.all([api.listRoutes(), loadFollowsFromServer()]);
       setRoutes(r);
+      setFollowing(ids);
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -49,6 +54,20 @@ export default function RoutesScreen() {
     }
     return list;
   }, [routes, cityFilter, search]);
+
+  async function onToggleFollow(routeId: string) {
+    if (!user) {
+      router.push("/(auth)/login");
+      return;
+    }
+    setFollowing((prev) => {
+      const next = new Set(prev);
+      if (next.has(routeId)) next.delete(routeId);
+      else next.add(routeId);
+      return next;
+    });
+    await toggleFollow(routeId);
+  }
 
   return (
     <SafeAreaView style={styles.root} edges={["top"]}>
@@ -99,48 +118,71 @@ export default function RoutesScreen() {
               <Text style={styles.emptyText}>Try a different city or search term.</Text>
             </View>
           }
-          renderItem={({ item }) => <RouteCard route={item} onPress={() => router.push(`/route/${item.route_id}`)} />}
+          renderItem={({ item }) => (
+            <RouteCard
+              route={item}
+              followed={following.has(item.route_id)}
+              onPress={() => router.push(`/route/${item.route_id}`)}
+              onToggleFollow={() => onToggleFollow(item.route_id)}
+            />
+          )}
         />
       )}
     </SafeAreaView>
   );
 }
 
-function RouteCard({ route, onPress }: { route: Route; onPress: () => void }) {
+function RouteCard({ route, followed, onPress, onToggleFollow }: { route: Route; followed: boolean; onPress: () => void; onToggleFollow: () => void }) {
   const meta = vehicleMeta[route.vehicle_type] || vehicleMeta.bus;
   const origin = route.stops[0]?.name || "—";
   const dest = route.stops[route.stops.length - 1]?.name || "—";
   return (
-    <TouchableOpacity onPress={onPress} style={styles.card} activeOpacity={0.9} testID={`route-card-${route.route_id}`}>
-      <View style={styles.cardHeader}>
-        <View style={[styles.badge, { backgroundColor: meta.color }]}>
-          <Ionicons name={meta.icon} size={14} color={route.vehicle_type === "danfo" ? "#1A1A1A" : "#fff"} />
-          <Text style={[styles.badgeText, { color: route.vehicle_type === "danfo" ? "#1A1A1A" : "#fff" }]}>{meta.label}</Text>
+    <View style={styles.card} testID={`route-card-${route.route_id}`}>
+      <TouchableOpacity onPress={onPress} activeOpacity={0.85}>
+        <View style={styles.cardHeader}>
+          <View style={[styles.badge, { backgroundColor: meta.color }]}>
+            <Ionicons name={meta.icon} size={14} color={route.vehicle_type === "danfo" ? "#1A1A1A" : "#fff"} />
+            <Text style={[styles.badgeText, { color: route.vehicle_type === "danfo" ? "#1A1A1A" : "#fff" }]}>{meta.label}</Text>
+          </View>
+          <View style={styles.cityChip}>
+            <Ionicons name="location" size={12} color={colors.textSecondary} />
+            <Text style={styles.cityText}>{route.city}</Text>
+          </View>
+          {route.fare != null && <Text style={styles.fare}>₦{route.fare}</Text>}
         </View>
-        <View style={styles.cityChip}>
-          <Ionicons name="location" size={12} color={colors.textSecondary} />
-          <Text style={styles.cityText}>{route.city}</Text>
+        <Text style={styles.routeName} numberOfLines={1}>{route.name}</Text>
+        <View style={styles.timeline}>
+          <View style={styles.dotGreen} />
+          <Text style={styles.stopText} numberOfLines={1}>{origin}</Text>
         </View>
-        {route.fare != null && <Text style={styles.fare}>₦{route.fare}</Text>}
-      </View>
-      <Text style={styles.routeName} numberOfLines={1}>{route.name}</Text>
-      <View style={styles.timeline}>
-        <View style={styles.dotGreen} />
-        <Text style={styles.stopText} numberOfLines={1}>{origin}</Text>
-      </View>
-      <View style={styles.timelineLine} />
-      <View style={styles.timeline}>
-        <View style={styles.dotYellow} />
-        <Text style={styles.stopText} numberOfLines={1}>{dest}</Text>
-      </View>
+        <View style={styles.timelineLine} />
+        <View style={styles.timeline}>
+          <View style={styles.dotYellow} />
+          <Text style={styles.stopText} numberOfLines={1}>{dest}</Text>
+        </View>
+      </TouchableOpacity>
       <View style={styles.cardFooter}>
         <Text style={styles.footerText}>{route.stops.length} stops</Text>
-        <View style={styles.viewBtn}>
-          <Text style={styles.viewBtnText}>View ETAs</Text>
-          <Ionicons name="arrow-forward" size={14} color={colors.primary} />
+        <View style={styles.footerActions}>
+          <TouchableOpacity
+            onPress={onToggleFollow}
+            style={[styles.pinBtn, followed && styles.pinBtnActive]}
+            testID={`route-pin-${route.route_id}`}
+          >
+            <Ionicons
+              name={followed ? "notifications" : "notifications-outline"}
+              size={15}
+              color={followed ? "#fff" : colors.textPrimary}
+            />
+            <Text style={[styles.pinText, followed && styles.pinTextActive]}>{followed ? "Following" : "Follow"}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={onPress} style={styles.viewBtn} testID={`route-view-${route.route_id}`}>
+            <Text style={styles.viewBtnText}>View ETAs</Text>
+            <Ionicons name="arrow-forward" size={14} color={colors.primary} />
+          </TouchableOpacity>
         </View>
       </View>
-    </TouchableOpacity>
+    </View>
   );
 }
 
@@ -197,6 +239,11 @@ const styles = StyleSheet.create({
   timelineLine: { width: 2, height: 14, backgroundColor: colors.border, marginLeft: 4, marginVertical: 2 },
   cardFooter: { flexDirection: "row", alignItems: "center", marginTop: 14, paddingTop: 12, borderTopWidth: 1, borderTopColor: colors.border },
   footerText: { color: colors.textSecondary, fontSize: 12, fontWeight: "700" },
-  viewBtn: { marginLeft: "auto", flexDirection: "row", alignItems: "center", gap: 4 },
+  footerActions: { marginLeft: "auto", flexDirection: "row", alignItems: "center", gap: 10 },
+  pinBtn: { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999, backgroundColor: colors.input },
+  pinBtnActive: { backgroundColor: colors.primary },
+  pinText: { color: colors.textPrimary, fontSize: 12, fontWeight: "800" },
+  pinTextActive: { color: "#fff" },
+  viewBtn: { flexDirection: "row", alignItems: "center", gap: 4 },
   viewBtnText: { color: colors.primary, fontSize: 13, fontWeight: "800" },
 });
