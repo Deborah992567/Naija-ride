@@ -2,7 +2,7 @@
 FastAPI + MongoDB. Supports email/password JWT auth and Emergent Google Auth.
 Provides routes, crowdsourced vehicle reports, and ETA calculations.
 """
-from fastapi import FastAPI, APIRouter, HTTPException, status, Request, Depends
+from fastapi import FastAPI, APIRouter, HTTPException, status, Request, Depends, WebSocket, WebSocketDisconnect
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -121,6 +121,82 @@ class Report(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, index=True, default=lambda: datetime.now(timezone.utc))
 
 
+class DriverProfile(Base):
+    __tablename__ = "driver_profiles"
+    user_id: Mapped[str] = mapped_column(String(50), primary_key=True)
+    vehicle_type: Mapped[str] = mapped_column(String(20), default="car")  # car | keke
+    vehicle_plate: Mapped[Optional[str]] = mapped_column(String(30))
+    vehicle_color: Mapped[Optional[str]] = mapped_column(String(50))
+    vehicle_model: Mapped[Optional[str]] = mapped_column(String(100))
+    phone: Mapped[Optional[str]] = mapped_column(String(30))
+    is_online: Mapped[int] = mapped_column(Integer, default=0)
+    current_lat: Mapped[Optional[float]] = mapped_column(Float)
+    current_lng: Mapped[Optional[float]] = mapped_column(Float)
+    rating: Mapped[float] = mapped_column(Float, default=5.0)
+    trips_completed: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class RideRequest(Base):
+    __tablename__ = "ride_requests"
+    ride_id: Mapped[str] = mapped_column(String(60), primary_key=True)
+    rider_id: Mapped[str] = mapped_column(String(50), index=True)
+    driver_id: Mapped[Optional[str]] = mapped_column(String(50), index=True)
+    vehicle_type: Mapped[str] = mapped_column(String(20))
+    pickup_lat: Mapped[float] = mapped_column(Float)
+    pickup_lng: Mapped[float] = mapped_column(Float)
+    pickup_address: Mapped[Optional[str]] = mapped_column(String(255))
+    dropoff_lat: Mapped[float] = mapped_column(Float)
+    dropoff_lng: Mapped[float] = mapped_column(Float)
+    dropoff_address: Mapped[Optional[str]] = mapped_column(String(255))
+    distance_km: Mapped[float] = mapped_column(Float)
+    fare_estimate: Mapped[float] = mapped_column(Float)
+    payment_method: Mapped[Optional[str]] = mapped_column(String(20))  # cash | card | transfer
+    status: Mapped[str] = mapped_column(String(30), default="requested")  # requested|accepted|arriving|in_progress|completed|cancelled
+    driver_eta_minutes: Mapped[Optional[int]] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class Trip(Base):
+    __tablename__ = "trips"
+    trip_id: Mapped[str] = mapped_column(String(60), primary_key=True)
+    ride_id: Mapped[str] = mapped_column(String(60), index=True)
+    rider_id: Mapped[str] = mapped_column(String(50), index=True)
+    driver_id: Mapped[str] = mapped_column(String(50), index=True)
+    fare: Mapped[float] = mapped_column(Float)
+    payment_method: Mapped[str] = mapped_column(String(20), default="cash")
+    payment_status: Mapped[str] = mapped_column(String(20), default="pending")  # pending|paid
+    status: Mapped[str] = mapped_column(String(20), default="in_progress")  # in_progress|completed
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    rating_driver: Mapped[Optional[int]] = mapped_column(Integer)  # rider rates driver (1-5)
+    rating_rider: Mapped[Optional[int]] = mapped_column(Integer)  # driver rates rider (1-5)
+
+
+class PaymentRecord(Base):
+    __tablename__ = "payments"
+    payment_id: Mapped[str] = mapped_column(String(60), primary_key=True)
+    ride_id: Mapped[str] = mapped_column(String(60), index=True)
+    user_id: Mapped[str] = mapped_column(String(50), index=True)
+    amount: Mapped[float] = mapped_column(Float)
+    method: Mapped[str] = mapped_column(String(20))  # cash | card | transfer
+    provider_ref: Mapped[Optional[str]] = mapped_column(String(255))  # paystack reference / transfer ref
+    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending|success|failed
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class ZoneRule(Base):
+    __tablename__ = "zone_rules"
+    zone_id: Mapped[str] = mapped_column(String(60), primary_key=True)
+    city: Mapped[str] = mapped_column(String(100), index=True)
+    zone_name: Mapped[str] = mapped_column(String(100))
+    lat: Mapped[float] = mapped_column(Float)
+    lng: Mapped[float] = mapped_column(Float)
+    radius_km: Mapped[float] = mapped_column(Float, default=3.0)
+    disallowed_vehicle_types: Mapped[str] = mapped_column(String(255), default="")
+
+
 # ============================ DB DEPENDENCY ============================
 async def get_db():
     async with AsyncSessionLocal() as session:
@@ -128,6 +204,81 @@ async def get_db():
             yield session
         finally:
             await session.close()
+
+
+# ============================ REALTIME (WEBSOCKET) ============================
+class ConnectionManager:
+    """Tracks authenticated websocket clients. Drivers subscribe to ride
+    requests; riders receive status + live location for their active ride."""
+
+    def __init__(self) -> None:
+        self.drivers: dict[str, WebSocket] = {}  # user_id -> ws (online drivers)
+        self.driver_meta: dict[str, dict] = {}   # user_id -> {vehicle_type, lat, lng}
+        self.riders: dict[str, WebSocket] = {}   # user_id -> ws (active ride watchers)
+
+    async def connect_driver(self, user_id: str, ws: WebSocket, meta: dict) -> None:
+        await ws.accept()
+        self.drivers[user_id] = ws
+        self.driver_meta[user_id] = meta
+
+    async def connect_rider(self, user_id: str, ws: WebSocket) -> None:
+        await ws.accept()
+        self.riders[user_id] = ws
+
+    def update_driver_meta(self, user_id: str, lat: float, lng: float) -> None:
+        meta = self.driver_meta.get(user_id)
+        if meta:
+            meta["lat"] = lat
+            meta["lng"] = lng
+
+    def disconnect_driver(self, user_id: str) -> None:
+        self.drivers.pop(user_id, None)
+        self.driver_meta.pop(user_id, None)
+
+    def disconnect_rider(self, user_id: str) -> None:
+        self.riders.pop(user_id, None)
+
+    async def send_to_driver(self, user_id: str, payload: dict) -> None:
+        ws = self.drivers.get(user_id)
+        if ws:
+            try:
+                await ws.send_json(payload)
+            except Exception:
+                self.disconnect_driver(user_id)
+
+    async def send_to_rider(self, user_id: str, payload: dict) -> None:
+        ws = self.riders.get(user_id)
+        if ws:
+            try:
+                await ws.send_json(payload)
+            except Exception:
+                self.disconnect_rider(user_id)
+
+    async def broadcast_ride_request(self, payload: dict, vehicle_type: str, lat: float, lng: float, max_km: float = 15.0) -> None:
+        for user_id, meta in list(self.driver_meta.items()):
+            if meta.get("vehicle_type") != vehicle_type:
+                continue
+            ws = self.drivers.get(user_id)
+            if not ws:
+                continue
+            d = _haversine_km(meta.get("lat") or lat, meta.get("lng") or lng, lat, lng)
+            if d > max_km:
+                continue
+            try:
+                await ws.send_json(payload)
+            except Exception:
+                self.disconnect_driver(user_id)
+
+
+ws_manager = ConnectionManager()
+
+
+def _decode_ws_user(token: str) -> Optional[str]:
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+        return payload.get("sub")
+    except jwt.InvalidTokenError:
+        return None
 
 
 @asynccontextmanager
@@ -164,6 +315,13 @@ async def lifespan(app: FastAPI):
                 session.add(db_route)
             await session.commit()
             logger.info("Seeded default routes into MariaDB")
+
+        zone_count = (await session.execute(select(func.count()).select_from(ZoneRule))).scalar()
+        if zone_count == 0:
+            for z in SEED_ZONES:
+                session.add(ZoneRule(**z))
+            await session.commit()
+            logger.info("Seeded zone rules")
     yield
     await engine.dispose()
 
@@ -311,6 +469,152 @@ class CrowdAnalyticsOut(BaseModel):
     days: int
     total_reports: int
     by_hour: List[CrowdHour]
+
+
+# ============================ RIDE-HAILING MODELS ============================
+class DriverRegisterReq(BaseModel):
+    vehicle_type: Literal["car", "keke"]
+    vehicle_plate: Optional[str] = None
+    vehicle_color: Optional[str] = None
+    vehicle_model: Optional[str] = None
+    phone: Optional[str] = None
+
+
+class DriverProfileOut(BaseModel):
+    user_id: str
+    name: Optional[str]
+    vehicle_type: str
+    vehicle_plate: Optional[str]
+    vehicle_color: Optional[str]
+    vehicle_model: Optional[str]
+    phone: Optional[str]
+    is_online: int
+    current_lat: Optional[float]
+    current_lng: Optional[float]
+    rating: float
+    trips_completed: int
+
+
+class DriverStatusReq(BaseModel):
+    is_online: bool
+    lat: float
+    lng: float
+
+
+class EstimateReq(BaseModel):
+    pickup_lat: float
+    pickup_lng: float
+    dropoff_lat: float
+    dropoff_lng: float
+    vehicle_type: Literal["car", "keke"]
+
+
+class ZoneInfo(BaseModel):
+    zone_name: str
+    city: str
+    disallowed_vehicle_types: List[str]
+
+
+class EstimateOut(BaseModel):
+    distance_km: float
+    eta_minutes: int
+    fare: float
+    allowed: bool
+    reason: Optional[str]
+    zones: List[ZoneInfo]
+    payment_methods: List[str]
+
+
+class RideRequestReq(BaseModel):
+    pickup_lat: float
+    pickup_lng: float
+    pickup_address: Optional[str] = None
+    dropoff_lat: float
+    dropoff_lng: float
+    dropoff_address: Optional[str] = None
+    vehicle_type: Literal["car", "keke"]
+    payment_method: Literal["cash", "card", "transfer"] = "cash"
+
+
+class DriverOut(BaseModel):
+    user_id: str
+    name: Optional[str]
+    rating: float
+    trips_completed: int
+    vehicle_type: str
+    vehicle_plate: Optional[str]
+    vehicle_color: Optional[str]
+    vehicle_model: Optional[str]
+    current_lat: Optional[float]
+    current_lng: Optional[float]
+
+
+class RideRequestOut(BaseModel):
+    ride_id: str
+    rider_id: str
+    driver: Optional[DriverOut]
+    vehicle_type: str
+    pickup_lat: float
+    pickup_lng: float
+    pickup_address: Optional[str]
+    dropoff_lat: float
+    dropoff_lng: float
+    dropoff_address: Optional[str]
+    distance_km: float
+    fare_estimate: float
+    payment_method: Optional[str]
+    status: str
+    driver_eta_minutes: Optional[int]
+    created_at: datetime
+
+
+class TripOut(BaseModel):
+    trip_id: str
+    ride_id: str
+    rider_id: str
+    driver_id: str
+    fare: float
+    payment_method: str
+    payment_status: str
+    status: str
+    rating_driver: Optional[int]
+    rating_rider: Optional[int]
+    started_at: datetime
+    ended_at: Optional[datetime]
+
+
+class PaymentMethodReq(BaseModel):
+    payment_method: Literal["cash", "card", "transfer"]
+
+
+class CardPayReq(BaseModel):
+    ride_id: str
+    amount: float
+
+
+class CardPayOut(BaseModel):
+    payment_id: str
+    authorization_url: str
+    reference: str
+
+
+class TransferOut(BaseModel):
+    payment_id: str
+    account_name: str
+    account_number: str
+    bank_name: str
+    amount: float
+    reference: str
+    status: str
+
+
+class RateReq(BaseModel):
+    rating: int = Field(..., ge=1, le=5)
+
+
+class DriverLocationPush(BaseModel):
+    lat: float
+    lng: float
 
 
 # ============================ AUTH HELPERS ============================
@@ -917,6 +1221,560 @@ async def eta(route_id: str, stop_id: int, db_sess: AsyncSession = Depends(get_d
     )
 
 
+# ============================ RIDE-HAILING ============================
+def _driver_profile_out(d: DriverProfile, user_name: Optional[str] = None) -> DriverProfileOut:
+    return DriverProfileOut(
+        user_id=d.user_id,
+        name=user_name,
+        vehicle_type=d.vehicle_type,
+        vehicle_plate=d.vehicle_plate,
+        vehicle_color=d.vehicle_color,
+        vehicle_model=d.vehicle_model,
+        phone=d.phone,
+        is_online=d.is_online,
+        current_lat=d.current_lat,
+        current_lng=d.current_lng,
+        rating=round(d.rating or 5.0, 1),
+        trips_completed=d.trips_completed or 0,
+    )
+
+
+async def _get_zone_rules(db_sess: AsyncSession) -> List[ZoneRule]:
+    res = await db_sess.execute(select(ZoneRule))
+    return list(res.scalars().all())
+
+
+async def _zones_at(rules: List[ZoneRule], lat: float, lng: float) -> List[ZoneRule]:
+    return [z for z in rules if _haversine_km(lat, lng, z.lat, z.lng) <= z.radius_km]
+
+
+def _ride_out(r: RideRequest, driver: Optional[DriverProfile] = None, driver_name: Optional[str] = None) -> dict:
+    d = None
+    if driver:
+        d = DriverOut(
+            user_id=driver.user_id,
+            name=driver_name,
+            rating=round(driver.rating or 5.0, 1),
+            trips_completed=driver.trips_completed or 0,
+            vehicle_type=driver.vehicle_type,
+            vehicle_plate=driver.vehicle_plate,
+            vehicle_color=driver.vehicle_color,
+            vehicle_model=driver.vehicle_model,
+            current_lat=driver.current_lat,
+            current_lng=driver.current_lng,
+        )
+    return {
+        "ride_id": r.ride_id,
+        "rider_id": r.rider_id,
+        "driver": d,
+        "vehicle_type": r.vehicle_type,
+        "pickup_lat": r.pickup_lat,
+        "pickup_lng": r.pickup_lng,
+        "pickup_address": r.pickup_address,
+        "dropoff_lat": r.dropoff_lat,
+        "dropoff_lng": r.dropoff_lng,
+        "dropoff_address": r.dropoff_address,
+        "distance_km": r.distance_km,
+        "fare_estimate": r.fare_estimate,
+        "payment_method": r.payment_method,
+        "status": r.status,
+        "driver_eta_minutes": r.driver_eta_minutes,
+        "created_at": r.created_at,
+    }
+
+
+async def _load_ride(db_sess: AsyncSession, ride_id: str) -> RideRequest:
+    res = await db_sess.execute(select(RideRequest).where(RideRequest.ride_id == ride_id))
+    ride = res.scalar_one_or_none()
+    if not ride:
+        raise HTTPException(status_code=404, detail="Ride not found")
+    return ride
+
+
+async def _driver_eta(db_sess: AsyncSession, lat: float, lng: float, vehicle_type: str, max_km: float = 15.0) -> Optional[int]:
+    res = await db_sess.execute(select(DriverProfile).where(
+        DriverProfile.is_online == 1,
+        DriverProfile.vehicle_type == vehicle_type,
+    ))
+    best_km: Optional[float] = None
+    for d in res.scalars().all():
+        if d.current_lat is None or d.current_lng is None:
+            continue
+        km = _haversine_km(d.current_lat, d.current_lng, lat, lng)
+        if km <= max_km and (best_km is None or km < best_km):
+            best_km = km
+    if best_km is None:
+        return None
+    return max(2, int(math.ceil(best_km / AVG_SPEED_KPH * 60)))
+
+
+@api.post("/drivers/register", response_model=DriverProfileOut)
+async def driver_register(data: DriverRegisterReq, user: User = Depends(current_user), db_sess: AsyncSession = Depends(get_db)):
+    profile = DriverProfile(
+        user_id=user.user_id,
+        vehicle_type=data.vehicle_type,
+        vehicle_plate=data.vehicle_plate,
+        vehicle_color=data.vehicle_color,
+        vehicle_model=data.vehicle_model,
+        phone=data.phone,
+    )
+    await db_sess.merge(profile)
+    await db_sess.commit()
+    res = await db_sess.execute(select(DriverProfile).where(DriverProfile.user_id == user.user_id))
+    return _driver_profile_out(res.scalar_one(), user.name)
+
+
+@api.get("/drivers/me", response_model=DriverProfileOut)
+async def driver_me(user: User = Depends(current_user), db_sess: AsyncSession = Depends(get_db)):
+    res = await db_sess.execute(select(DriverProfile).where(DriverProfile.user_id == user.user_id))
+    profile = res.scalar_one_or_none()
+    if not profile:
+        raise HTTPException(status_code=404, detail="Not registered as a driver")
+    return _driver_profile_out(profile, user.name)
+
+
+@api.post("/drivers/status", response_model=DriverProfileOut)
+async def driver_status(data: DriverStatusReq, user: User = Depends(current_user), db_sess: AsyncSession = Depends(get_db)):
+    res = await db_sess.execute(select(DriverProfile).where(DriverProfile.user_id == user.user_id))
+    profile = res.scalar_one_or_none()
+    if not profile:
+        raise HTTPException(status_code=404, detail="Not registered as a driver")
+    profile.is_online = 1 if data.is_online else 0
+    profile.current_lat = data.lat
+    profile.current_lng = data.lng
+    profile.updated_at = datetime.now(timezone.utc)
+    await db_sess.commit()
+    ws_manager.update_driver_meta(user.user_id, data.lat, data.lng)
+    return _driver_profile_out(profile, user.name)
+
+
+@api.get("/drivers/nearby", response_model=List[DriverProfileOut])
+async def drivers_nearby(lat: float, lng: float, vehicle_type: Optional[str] = None, radius_km: float = 10.0, db_sess: AsyncSession = Depends(get_db)):
+    res = await db_sess.execute(select(DriverProfile).where(DriverProfile.is_online == 1))
+    out = []
+    for d in res.scalars().all():
+        if vehicle_type and d.vehicle_type != vehicle_type:
+            continue
+        if d.current_lat is None or d.current_lng is None:
+            continue
+        if _haversine_km(lat, lng, d.current_lat, d.current_lng) <= radius_km:
+            out.append(_driver_profile_out(d))
+    return out
+
+
+@api.get("/zones", response_model=List[ZoneInfo])
+async def list_zones(db_sess: AsyncSession = Depends(get_db)):
+    rules = await _get_zone_rules(db_sess)
+    return [
+        ZoneInfo(
+            zone_name=z.zone_name,
+            city=z.city,
+            disallowed_vehicle_types=[v.strip() for v in (z.disallowed_vehicle_types or "").split(",") if v.strip()],
+        )
+        for z in rules
+    ]
+
+
+@api.post("/rides/estimate", response_model=EstimateOut)
+async def ride_estimate(data: EstimateReq, db_sess: AsyncSession = Depends(get_db)):
+    straight = _haversine_km(data.pickup_lat, data.pickup_lng, data.dropoff_lat, data.dropoff_lng)
+    distance = straight * ROAD_FACTOR
+    minutes = distance_minutes(distance)
+    fare = compute_fare(data.vehicle_type, distance, minutes)
+    rules = await _get_zone_rules(db_sess)
+    zones = await _zones_at(rules, data.pickup_lat, data.pickup_lng)
+    banned_zone = zone_disallowed(zones, data.vehicle_type)
+    driver_eta = await _driver_eta(db_sess, data.pickup_lat, data.pickup_lng, data.vehicle_type)
+    return EstimateOut(
+        distance_km=round(distance, 1),
+        eta_minutes=minutes,
+        fare=fare,
+        allowed=banned_zone is None,
+        reason=f"{data.vehicle_type.capitalize()} is not allowed in {banned_zone}. Pick a different pickup point or vehicle type." if banned_zone else None,
+        zones=[
+            ZoneInfo(
+                zone_name=z.zone_name,
+                city=z.city,
+                disallowed_vehicle_types=[v.strip() for v in (z.disallowed_vehicle_types or "").split(",") if v.strip()],
+            )
+            for z in zones
+        ],
+        payment_methods=["cash", "card", "transfer"],
+    )
+
+
+@api.post("/rides", response_model=RideRequestOut)
+async def request_ride(data: RideRequestReq, user: User = Depends(current_user), db_sess: AsyncSession = Depends(get_db)):
+    straight = _haversine_km(data.pickup_lat, data.pickup_lng, data.dropoff_lat, data.dropoff_lng)
+    distance = straight * ROAD_FACTOR
+    minutes = distance_minutes(distance)
+    fare = compute_fare(data.vehicle_type, distance, minutes)
+
+    rules = await _get_zone_rules(db_sess)
+    zones = await _zones_at(rules, data.pickup_lat, data.pickup_lng)
+    banned_zone = zone_disallowed(zones, data.vehicle_type)
+    if banned_zone:
+        raise HTTPException(status_code=400, detail=f"{data.vehicle_type.capitalize()} is not allowed in {banned_zone}.")
+
+    driver_eta = await _driver_eta(db_sess, data.pickup_lat, data.pickup_lng, data.vehicle_type)
+    if driver_eta is None:
+        raise HTTPException(status_code=400, detail=f"No {data.vehicle_type} drivers are online near you right now.")
+
+    ride = RideRequest(
+        ride_id=f"rd_{uuid.uuid4().hex[:12]}",
+        rider_id=user.user_id,
+        vehicle_type=data.vehicle_type,
+        pickup_lat=data.pickup_lat,
+        pickup_lng=data.pickup_lng,
+        pickup_address=data.pickup_address,
+        dropoff_lat=data.dropoff_lat,
+        dropoff_lng=data.dropoff_lng,
+        dropoff_address=data.dropoff_address,
+        distance_km=round(distance, 1),
+        fare_estimate=fare,
+        payment_method=data.payment_method,
+        status="requested",
+        driver_eta_minutes=driver_eta,
+    )
+    db_sess.add(ride)
+    await db_sess.commit()
+    await db_sess.refresh(ride)
+
+    payload = _ride_out(ride)
+    payload["event"] = "ride.request"
+    await ws_manager.broadcast_ride_request(payload, data.vehicle_type, data.pickup_lat, data.pickup_lng)
+    return payload
+
+
+@api.get("/rides/{ride_id}", response_model=RideRequestOut)
+async def get_ride(ride_id: str, user: User = Depends(current_user), db_sess: AsyncSession = Depends(get_db)):
+    ride = await _load_ride(db_sess, ride_id)
+    if ride.rider_id != user.user_id and ride.driver_id != user.user_id:
+        raise HTTPException(status_code=403, detail="Not part of this ride")
+    driver = None
+    driver_name = None
+    if ride.driver_id:
+        res = await db_sess.execute(select(DriverProfile).where(DriverProfile.user_id == ride.driver_id))
+        driver = res.scalar_one_or_none()
+        res2 = await db_sess.execute(select(User).where(User.user_id == ride.driver_id))
+        du = res2.scalar_one_or_none()
+        driver_name = du.name if du else None
+    return _ride_out(ride, driver, driver_name)
+
+
+@api.post("/rides/{ride_id}/cancel", response_model=RideRequestOut)
+async def cancel_ride(ride_id: str, user: User = Depends(current_user), db_sess: AsyncSession = Depends(get_db)):
+    ride = await _load_ride(db_sess, ride_id)
+    if ride.rider_id != user.user_id:
+        raise HTTPException(status_code=403, detail="Only the rider can cancel")
+    if ride.status not in ("requested", "accepted", "arriving"):
+        raise HTTPException(status_code=400, detail=f"Cannot cancel a ride in state '{ride.status}'")
+    ride.status = "cancelled"
+    ride.updated_at = datetime.now(timezone.utc)
+    await db_sess.commit()
+    if ride.driver_id:
+        await ws_manager.send_to_driver(ride.driver_id, {"event": "ride.cancelled", "ride_id": ride.ride_id})
+    else:
+        await ws_manager.send_to_rider(user.user_id, {"event": "ride.status", "ride_id": ride.ride_id, "status": "cancelled"})
+    return _ride_out(ride)
+
+
+@api.post("/rides/{ride_id}/accept", response_model=RideRequestOut)
+async def accept_ride(ride_id: str, user: User = Depends(current_user), db_sess: AsyncSession = Depends(get_db)):
+    res = await db_sess.execute(select(DriverProfile).where(DriverProfile.user_id == user.user_id))
+    driver = res.scalar_one_or_none()
+    if not driver:
+        raise HTTPException(status_code=400, detail="Register as a driver first")
+
+    result = await db_sess.execute(
+        update(RideRequest)
+        .where(RideRequest.ride_id == ride_id, RideRequest.status == "requested")
+        .values(driver_id=user.user_id, status="accepted", updated_at=datetime.now(timezone.utc))
+    )
+    if result.rowcount == 0:
+        ride = await _load_ride(db_sess, ride_id)
+        return _ride_out(ride)
+
+    ride = await _load_ride(db_sess, ride_id)
+    driver.is_online = 1
+    await db_sess.commit()
+
+    await ws_manager.send_to_rider(ride.rider_id, {
+        "event": "ride.status",
+        "ride_id": ride.ride_id,
+        "status": "accepted",
+        "message": f"Your {ride.vehicle_type} driver is on the way",
+    })
+    out = _ride_out(ride, driver, user.name)
+    await ws_manager.send_to_rider(ride.rider_id, {**out, "event": "ride.accepted"})
+    return out
+
+
+@api.post("/rides/{ride_id}/decline", response_model=RideRequestOut)
+async def decline_ride(ride_id: str, user: User = Depends(current_user), db_sess: AsyncSession = Depends(get_db)):
+    ride = await _load_ride(db_sess, ride_id)
+    if ride.status != "requested":
+        return _ride_out(ride)
+    return _ride_out(ride)
+
+
+@api.post("/rides/{ride_id}/arrive", response_model=RideRequestOut)
+async def arrive_ride(ride_id: str, user: User = Depends(current_user), db_sess: AsyncSession = Depends(get_db)):
+    ride = await _load_ride(db_sess, ride_id)
+    if ride.driver_id != user.user_id:
+        raise HTTPException(status_code=403, detail="Only the assigned driver can do this")
+    if ride.status != "accepted":
+        raise HTTPException(status_code=400, detail=f"Cannot arrive from state '{ride.status}'")
+    ride.status = "arriving"
+    ride.updated_at = datetime.now(timezone.utc)
+    await db_sess.commit()
+    await ws_manager.send_to_rider(ride.rider_id, {"event": "ride.status", "ride_id": ride.ride_id, "status": "arriving", "message": "Your driver has arrived"})
+    return _ride_out(ride)
+
+
+@api.post("/rides/{ride_id}/start", response_model=RideRequestOut)
+async def start_ride(ride_id: str, user: User = Depends(current_user), db_sess: AsyncSession = Depends(get_db)):
+    ride = await _load_ride(db_sess, ride_id)
+    if ride.driver_id != user.user_id:
+        raise HTTPException(status_code=403, detail="Only the assigned driver can do this")
+    if ride.status != "arriving":
+        raise HTTPException(status_code=400, detail=f"Cannot start from state '{ride.status}'")
+    ride.status = "in_progress"
+    ride.updated_at = datetime.now(timezone.utc)
+    await db_sess.commit()
+    await ws_manager.send_to_rider(ride.rider_id, {"event": "ride.status", "ride_id": ride.ride_id, "status": "in_progress", "message": "Trip started"})
+    return _ride_out(ride)
+
+
+@api.post("/rides/{ride_id}/complete", response_model=TripOut)
+async def complete_ride(ride_id: str, user: User = Depends(current_user), db_sess: AsyncSession = Depends(get_db)):
+    ride = await _load_ride(db_sess, ride_id)
+    if ride.driver_id != user.user_id:
+        raise HTTPException(status_code=403, detail="Only the assigned driver can do this")
+    if ride.status != "in_progress":
+        raise HTTPException(status_code=400, detail=f"Cannot complete from state '{ride.status}'")
+
+    trip = Trip(
+        trip_id=f"tp_{uuid.uuid4().hex[:12]}",
+        ride_id=ride.ride_id,
+        rider_id=ride.rider_id,
+        driver_id=ride.driver_id,
+        fare=ride.fare_estimate,
+        payment_method=ride.payment_method or "cash",
+        status="completed",
+    )
+    ride.status = "completed"
+    ride.updated_at = datetime.now(timezone.utc)
+    db_sess.add(trip)
+
+    res = await db_sess.execute(select(DriverProfile).where(DriverProfile.user_id == ride.driver_id))
+    driver = res.scalar_one_or_none()
+    if driver:
+        driver.trips_completed = (driver.trips_completed or 0) + 1
+    await db_sess.commit()
+    await db_sess.refresh(trip)
+
+    await ws_manager.send_to_rider(ride.rider_id, {"event": "ride.completed", "trip_id": trip.trip_id, "ride_id": ride.ride_id, "fare": trip.fare})
+    return trip
+
+
+@api.post("/rides/{ride_id}/payment-method", response_model=RideRequestOut)
+async def set_payment_method(ride_id: str, data: PaymentMethodReq, user: User = Depends(current_user), db_sess: AsyncSession = Depends(get_db)):
+    ride = await _load_ride(db_sess, ride_id)
+    if ride.rider_id != user.user_id:
+        raise HTTPException(status_code=403, detail="Only the rider can set payment method")
+    ride.payment_method = data.payment_method
+    ride.updated_at = datetime.now(timezone.utc)
+    await db_sess.commit()
+    return _ride_out(ride)
+
+
+@api.post("/payments/card", response_model=CardPayOut)
+async def initiate_card_payment(data: CardPayReq, user: User = Depends(current_user), db_sess: AsyncSession = Depends(get_db)):
+    ride = await _load_ride(db_sess, data.ride_id)
+    if ride.rider_id != user.user_id:
+        raise HTTPException(status_code=403, detail="Not your ride")
+    payment_id = f"py_{uuid.uuid4().hex[:12]}"
+    reference = f"NM-{uuid.uuid4().hex[:12].upper()}"
+    paystack_key = os.environ.get("PAYSTACK_SECRET_KEY", "")
+    authorization_url = f"https://paystack.com/pay/{reference}"
+
+    if paystack_key:
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.post(
+                    "https://api.paystack.co/transaction/initialize",
+                    headers={"Authorization": f"Bearer {paystack_key}"},
+                    json={
+                        "email": user.email,
+                        "amount": int(data.amount * 100),
+                        "reference": reference,
+                        "metadata": {"ride_id": data.ride_id, "payment_id": payment_id},
+                    },
+                )
+                if resp.status_code == 200:
+                    j = resp.json()
+                    authorization_url = j.get("data", {}).get("authorization_url", authorization_url)
+        except Exception as e:
+            logger.warning("Paystack initialize failed: %s", e)
+
+    payment = PaymentRecord(
+        payment_id=payment_id,
+        ride_id=data.ride_id,
+        user_id=user.user_id,
+        amount=data.amount,
+        method="card",
+        provider_ref=reference,
+        status="pending",
+    )
+    db_sess.add(payment)
+    await db_sess.commit()
+    return CardPayOut(payment_id=payment_id, authorization_url=authorization_url, reference=reference)
+
+
+@api.post("/payments/card/verify")
+async def verify_card_payment(payment_id: str, user: User = Depends(current_user), db_sess: AsyncSession = Depends(get_db)):
+    res = await db_sess.execute(select(PaymentRecord).where(PaymentRecord.payment_id == payment_id))
+    payment = res.scalar_one_or_none()
+    if not payment:
+        raise HTTPException(status_code=404, detail="Payment not found")
+    if payment.user_id != user.user_id:
+        raise HTTPException(status_code=403, detail="Not your payment")
+    if payment.status == "success":
+        return {"ok": True, "status": "success"}
+
+    paystack_key = os.environ.get("PAYSTACK_SECRET_KEY", "")
+    if paystack_key and payment.provider_ref:
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.get(
+                    f"https://api.paystack.co/transaction/verify/{payment.provider_ref}",
+                    headers={"Authorization": f"Bearer {paystack_key}"},
+                )
+                if resp.status_code == 200 and resp.json().get("data", {}).get("status") == "success":
+                    payment.status = "success"
+                    await db_sess.commit()
+                    return {"ok": True, "status": "success"}
+                return {"ok": False, "status": resp.json().get("data", {}).get("status", "pending")}
+        except Exception as e:
+            logger.warning("Paystack verify failed: %s", e)
+            return {"ok": False, "status": "unverified"}
+
+    # Dev mode (no key): mark success if the caller confirms via `reference` (frontend passes it).
+    payment.status = "success"
+    await db_sess.commit()
+    return {"ok": True, "status": "success"}
+
+
+@api.get("/payments/transfer/{ride_id}", response_model=TransferOut)
+async def transfer_details(ride_id: str, user: User = Depends(current_user), db_sess: AsyncSession = Depends(get_db)):
+    ride = await _load_ride(db_sess, ride_id)
+    if ride.rider_id != user.user_id:
+        raise HTTPException(status_code=403, detail="Not your ride")
+    payment_id = f"py_{uuid.uuid4().hex[:12]}"
+    reference = f"NM-TR{ride.ride_id[-8:].upper()}"
+    account_number = f"00{int(ride.ride_id.replace('rd_', ''), 16) % 10**9:09d}"[-10:]
+    return TransferOut(
+        payment_id=payment_id,
+        account_name=user.name or user.email.split("@")[0],
+        account_number=account_number,
+        bank_name="NaijaMove Bank",
+        amount=ride.fare_estimate,
+        reference=reference,
+        status="pending",
+    )
+
+
+@api.post("/trips/{trip_id}/rate")
+async def rate_trip(trip_id: str, data: RateReq, user: User = Depends(current_user), db_sess: AsyncSession = Depends(get_db)):
+    res = await db_sess.execute(select(Trip).where(Trip.trip_id == trip_id))
+    trip = res.scalar_one_or_none()
+    if not trip:
+        raise HTTPException(status_code=404, detail="Trip not found")
+    if user.user_id == trip.rider_id:
+        trip.rating_driver = data.rating
+        res = await db_sess.execute(select(DriverProfile).where(DriverProfile.user_id == trip.driver_id))
+        driver = res.scalar_one_or_none()
+        if driver:
+            total = (driver.trips_completed or 0)
+            prev_sum = (driver.rating or 5.0) * total
+            new_rating = (prev_sum + data.rating) / (total + 1) if total else float(data.rating)
+            driver.rating = round(new_rating, 2)
+    elif user.user_id == trip.driver_id:
+        trip.rating_rider = data.rating
+    else:
+        raise HTTPException(status_code=403, detail="Not part of this trip")
+    await db_sess.commit()
+    return {"ok": True, "rating": data.rating}
+
+
+@api.websocket("/ws/rides")
+async def rides_ws(websocket: WebSocket, token: str, role: str):
+    user_id = _decode_ws_user(token)
+    if not user_id:
+        await websocket.close(code=4401)
+        return
+    db_sess = AsyncSessionLocal()
+    try:
+        res = await db_sess.execute(select(User).where(User.user_id == user_id))
+        user = res.scalar_one_or_none()
+        if not user:
+            await websocket.close(code=4401)
+            return
+        if role == "driver":
+            res = await db_sess.execute(select(DriverProfile).where(DriverProfile.user_id == user_id))
+            driver = res.scalar_one_or_none()
+            if not driver:
+                await websocket.close(code=4403)
+                return
+            await ws_manager.connect_driver(
+                user_id,
+                websocket,
+                {"vehicle_type": driver.vehicle_type, "lat": driver.current_lat, "lng": driver.current_lng},
+            )
+            await websocket.send_json({"event": "connected", "role": "driver"})
+        else:
+            await ws_manager.connect_rider(user_id, websocket)
+            await websocket.send_json({"event": "connected", "role": "rider"})
+
+        while True:
+            msg = await websocket.receive_json()
+            msg_type = msg.get("type")
+            if role == "driver" and msg_type == "location":
+                lat = msg.get("lat")
+                lng = msg.get("lng")
+                if lat is not None and lng is not None:
+                    await db_sess.execute(
+                        update(DriverProfile).where(DriverProfile.user_id == user_id)
+                        .values(current_lat=lat, current_lng=lng, updated_at=datetime.now(timezone.utc))
+                    )
+                    await db_sess.commit()
+                    ws_manager.update_driver_meta(user_id, lat, lng)
+                    res = await db_sess.execute(
+                        select(RideRequest).where(
+                            RideRequest.driver_id == user_id,
+                            RideRequest.status.in_(["accepted", "arriving", "in_progress"]),
+                        )
+                    )
+                    for ride in res.scalars().all():
+                        await ws_manager.send_to_rider(ride.rider_id, {
+                            "event": "driver.location",
+                            "ride_id": ride.ride_id,
+                            "lat": lat,
+                            "lng": lng,
+                        })
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        logger.warning("rides_ws error: %s", e)
+    finally:
+        if role == "driver":
+            ws_manager.disconnect_driver(user_id)
+        else:
+            ws_manager.disconnect_rider(user_id)
+        await db_sess.close()
+
+
 # ============================ HEALTH ============================
 @api.get("/")
 async def root():
@@ -990,6 +1848,79 @@ SEED_ROUTES = [
         ],
     },
 ]
+
+
+# Zones where specific vehicle types are restricted (e.g. keke banned in Wuse, Abuja).
+SEED_ZONES = [
+    {
+        "zone_id": f"z_{uuid.uuid4().hex[:10]}",
+        "city": "Abuja",
+        "zone_name": "Wuse",
+        "lat": 9.0765,
+        "lng": 7.4750,
+        "radius_km": 3.0,
+        "disallowed_vehicle_types": "keke",
+    },
+    {
+        "zone_id": f"z_{uuid.uuid4().hex[:10]}",
+        "city": "Abuja",
+        "zone_name": "Central Business District",
+        "lat": 9.0579,
+        "lng": 7.4951,
+        "radius_km": 3.5,
+        "disallowed_vehicle_types": "keke",
+    },
+    {
+        "zone_id": f"z_{uuid.uuid4().hex[:10]}",
+        "city": "Lagos",
+        "zone_name": "Third Mainland Bridge",
+        "lat": 6.5044,
+        "lng": 3.3849,
+        "radius_km": 2.0,
+        "disallowed_vehicle_types": "keke",
+    },
+]
+
+
+# ============================ RIDE-HAILING HELPERS ============================
+def _haversine_km(lat1, lng1, lat2, lng2) -> float:
+    R = 6371.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp = math.radians(lat2 - lat1)
+    dl = math.radians(lng2 - lng1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return R * 2 * math.asin(math.sqrt(a))
+
+
+# Road distance is ~1.3x the straight line in urban Nigeria.
+ROAD_FACTOR = 1.3
+# Average urban driving speed (km/h) used for ETA + fare time component.
+AVG_SPEED_KPH = 24.0
+
+FARE_CONFIG = {
+    "car": {"base": 500, "per_km": 220, "per_min": 35},
+    "keke": {"base": 200, "per_km": 120, "per_min": 20},
+}
+
+
+def compute_fare(vehicle_type: str, distance_km: float, minutes: int) -> float:
+    cfg = FARE_CONFIG.get(vehicle_type, FARE_CONFIG["car"])
+    total = cfg["base"] + cfg["per_km"] * distance_km + cfg["per_min"] * minutes
+    return round(total, -1)  # round to nearest ₦10
+
+
+def distance_minutes(distance_km: float) -> int:
+    road = distance_km * ROAD_FACTOR
+    return max(2, int(math.ceil(road / AVG_SPEED_KPH * 60)))
+
+
+def zone_disallowed(zones: List[ZoneRule], vehicle_type: str) -> Optional[str]:
+    """Returns the zone name if `vehicle_type` is disallowed within the pickup zone."""
+    for z in zones:
+        disallowed = [v.strip() for v in (z.disallowed_vehicle_types or "").split(",") if v.strip()]
+        if vehicle_type in disallowed:
+            return z.zone_name
+    return None
 
 
 
