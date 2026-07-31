@@ -1,7 +1,24 @@
 // API client + auth helpers for Transport Tracker
 import { storage } from "@/src/utils/storage";
+import Constants from "expo-constants";
 
-const BASE_URL = process.env.EXPO_PUBLIC_BACKEND_URL || "http://localhost:8000";
+// Resolve the backend URL:
+// 1. EXPO_PUBLIC_BACKEND_URL from .env (explicit override).
+// 2. Otherwise derive the host from Expo's hostUri so Expo Go / dev
+//    builds on a real device automatically target the dev machine.
+// Backend runs on port 8001 (8000 is reserved for an unrelated local app).
+function resolveBackendUrl(): string {
+  const fromEnv = process.env.EXPO_PUBLIC_BACKEND_URL;
+  if (fromEnv) return fromEnv.replace(/\/+$/, "");
+  const hostUri = Constants.expoConfig?.hostUri;
+  if (hostUri) {
+    const host = hostUri.split(":")[0];
+    return `http://${host}:8001`;
+  }
+  return "http://localhost:8001";
+}
+
+const BASE_URL = resolveBackendUrl();
 export const API = `${BASE_URL}/api`;
 const TOKEN_KEY = "tt_token";
 
