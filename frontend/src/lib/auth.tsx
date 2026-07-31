@@ -4,6 +4,7 @@ import { Platform } from "react-native";
 import * as WebBrowser from "expo-web-browser";
 import * as Linking from "expo-linking";
 import { api, clearToken, getToken, setToken, User } from "./api";
+import { registerForPushNotifications } from "./notifications";
 
 type AuthState = {
   user: User | null;
@@ -30,6 +31,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const u = await api.me();
       setUser(u);
+      void registerForPushNotifications();
     } catch {
       await clearToken();
       setUser(null);
@@ -47,12 +49,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const { token, user: u } = await api.login(email, password);
     await setToken(token);
     setUser(u);
+    void registerForPushNotifications();
   }
 
   async function signUp(email: string, password: string, name?: string) {
     const { token, user: u } = await api.register(email, password, name);
     await setToken(token);
     setUser(u);
+    void registerForPushNotifications();
   }
 
   async function signInGoogle() {
@@ -78,6 +82,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const { token, user: u } = await api.googleSession(sid);
     await setToken(token);
     setUser(u);
+    void registerForPushNotifications();
   }
 
   async function signOut() {

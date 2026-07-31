@@ -4,26 +4,37 @@ import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { api, type Eta, type Report, type Route } from "@/src/lib/api";
+import { api, type CrowdAnalytics, type Eta, type Report, type Route } from "@/src/lib/api";
 import { colors, radii, spacing, vehicleMeta } from "@/src/lib/theme";
 import { formatRelative } from "@/src/lib/time";
 import CrowdBars from "@/src/components/CrowdBars";
+import { useAuth } from "@/src/lib/auth";
+import { isFollowing, toggleFollow } from "@/src/lib/favorites";
 
 export default function RouteDetail() {
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id: string }>();
+  const { user } = useAuth();
   const [route, setRoute] = useState<Route | null>(null);
   const [etas, setEtas] = useState<Eta[]>([]);
   const [reports, setReports] = useState<Report[]>([]);
+  const [crowd, setCrowd] = useState<CrowdAnalytics | null>(null);
+  const [following, setFollowing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async () => {
     if (!id) return;
     try {
-      const [r, rep] = await Promise.all([api.getRoute(id), api.listReports(id, 120)]);
+      const [r, rep, crowdData] = await Promise.all([
+        api.getRoute(id),
+        api.listReports(id, 120),
+        api.crowdAnalytics(id).catch(() => null),
+      ]);
       setRoute(r);
       setReports(rep);
+      setCrowd(crowdData);
+      setFollowing(await isFollowing(id));
       // Compute ETAs sequentially (small N)
       const etaResults: Eta[] = [];
       for (let i = 0; i < r.stops.length; i++) {
@@ -69,6 +80,24 @@ export default function RouteDetail() {
           <Ionicons name={meta.icon} size={14} color={route.vehicle_type === "danfo" ? "#1A1A1A" : "#fff"} />
           <Text style={[styles.vBadgeText, { color: route.vehicle_type === "danfo" ? "#1A1A1A" : "#fff" }]}>{meta.label}</Text>
         </View>
+        <TouchableOpacity
+          onPress={() => {
+            if (!user) {
+              router.push("/(auth)/login");
+              return;
+            }
+            setFollowing((f) => !f);
+            void toggleFollow(id).catch(() => {});
+          }}
+          style={[styles.followBtn, following && styles.followBtnActive]}
+          testID="route-follow-button"
+        >
+          <Ionicons
+            name={following ? "notifications" : "notifications-outline"}
+            size={18}
+            color={following ? "#fff" : colors.textPrimary}
+          />
+        </TouchableOpacity>
       </View>
 
       <ScrollView
@@ -101,6 +130,33 @@ export default function RouteDetail() {
             <Text style={styles.statLabel}>Fare</Text>
           </View>
         </View>
+
+        {crowd && crowd.by_hour && crowd.by_hour.length > 0 && (
+          <>
+            <Text style={styles.section}>Crowd pattern</Text>
+            <View style={styles.crowdCard} testID="route-crowd-pattern">
+              <View style={styles.crowdBars}>
+                {crowd.by_hour.map((h) => {
+                  const max = crowd.by_hour.reduce((m, x) => Math.max(m, x.report_count), 1);
+                  const pct = Math.max(8, Math.round((h.report_count / max) * 100));
+                  const isPeak = h.report_count === max && h.report_count > 0;
+                  return (
+                    <View key={h.hour} style={styles.crowdBarCol}>
+                      <View
+                        style={[
+                          styles.crowdBar,
+                          { height: pct, backgroundColor: isPeak ? colors.secondary : colors.primary },
+                        ]}
+                      />
+                      <Text style={styles.crowdHour}>{h.hour}</Text>
+                    </View>
+                  );
+                })}
+              </View>
+              <Text style={styles.crowdHint}>Reports per hour, last 7 days</Text>
+            </View>
+          </>
+        )}
 
         <Text style={styles.section}>Stops & ETAs</Text>
         <View style={styles.stops}>
@@ -202,8 +258,31 @@ const styles = StyleSheet.create({
   sub: { fontSize: 12, color: colors.textSecondary, marginTop: 2 },
   vBadge: { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999 },
   vBadgeText: { fontSize: 11, fontWeight: "800" },
+  followBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.input,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  followBtnActive: { backgroundColor: colors.primary, borderColor: colors.primary },
   scroll: { padding: spacing.lg, paddingBottom: 80 },
   desc: { color: colors.textSecondary, fontSize: 14, lineHeight: 22, marginBottom: spacing.md },
+  crowdCard: {
+    backgroundColor: colors.card,
+    borderRadius: radii.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing.lg,
+  },
+  crowdBars: { flexDirection: "row", alignItems: "flex-end", justifyContent: "space-between", gap: 3 },
+  crowdBarCol: { flex: 1, alignItems: "center", gap: 6 },
+  crowdBar: { width: "80%", borderTopLeftRadius: 4, borderTopRightRadius: 4, minHeight: 2 },
+  crowdHour: { fontSize: 9, fontWeight: "700", color: colors.textSecondary },
+  crowdHint: { fontSize: 11, color: colors.textSecondary, marginTop: 10, textAlign: "center" },
   statRow: { flexDirection: "row", gap: 10 },
   stat: {
     flex: 1,

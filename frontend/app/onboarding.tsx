@@ -21,17 +21,17 @@ const slides = [
   {
     title: "Know your ride",
     body: "See live buses, danfos, keke and campus shuttles around you.",
-    image: "https://images.pexels.com/photos/36883970/pexels-photo-36883970.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=1200&w=900",
+    image: require("../assets/images/onboarding/onboard_1.jpeg"),
   },
   {
     title: "Real-time ETAs",
     body: "Stop guessing. Get arrival times powered by riders just like you.",
-    image: "https://images.pexels.com/photos/37567064/pexels-photo-37567064.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=1200&w=900",
+    image: require("../assets/images/onboarding/onboard_2.jpeg"),
   },
   {
     title: "Never wait aimlessly",
     body: "Report sightings, crowd levels and fare changes. Earn karma for helping the community.",
-    image: "https://images.pexels.com/photos/17859087/pexels-photo-17859087.png?auto=compress&cs=tinysrgb&dpr=2&h=1200&w=900",
+    image: require("../assets/images/onboarding/onboard_3.jpeg"),
   },
 ];
 
@@ -65,7 +65,7 @@ export default function Onboarding() {
         onScroll={onScroll}
         scrollEventThrottle={16}
         renderItem={({ item }) => (
-          <ImageBackground source={{ uri: item.image }} style={{ width, height }} resizeMode="cover">
+          <ImageBackground source={item.image} style={{ width, height }} resizeMode="cover">
             <LinearGradient
               colors={["rgba(0,0,0,0)", "rgba(0,0,0,0.4)", "rgba(0,0,0,0.92)"]}
               style={StyleSheet.absoluteFill}

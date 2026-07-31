@@ -20,19 +20,21 @@ export const LOGIN = {
 	emailInput: 'login-email-input',
 	passwordInput: 'login-password-input',
 	submitButton: 'login-submit-button',
-	forgotPasswordLink: 'login-forgot-password-link',
-	registerLink: 'login-register-link',
+	googleButton: 'login-google-button',
+	registerLink: 'login-go-register',
+	errorBox: 'login-error',
 };
 
 export const REGISTER = {
+	backButton: 'register-back-button',
 	nameInput: 'register-name-input',
 	emailInput: 'register-email-input',
 	passwordInput: 'register-password-input',
-	passwordConfirmInput: 'register-password-confirm-input',
 	submitButton: 'register-submit-button',
-	loginLink: 'register-login-link',
+	loginLink: 'register-go-login',
+	errorBox: 'register-error',
 };
 
 export const LOGOUT = {
-	button: 'logout-button',
+	button: 'profile-sign-out',
 };

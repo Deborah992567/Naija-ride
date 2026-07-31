@@ -16,6 +16,7 @@ import { Ionicons } from "@expo/vector-icons";
 import * as Location from "expo-location";
 import { api, type Route } from "@/src/lib/api";
 import { colors, crowdMeta, radii, spacing, vehicleMeta } from "@/src/lib/theme";
+import { getDeviceId } from "@/src/lib/device";
 
 const CROWD: ("empty" | "moderate" | "packed")[] = ["empty", "moderate", "packed"];
 
@@ -36,7 +37,8 @@ export default function ReportScreen() {
       setRoutes(rs);
       if (rs.length && !routeId) setRouteId(rs[0].route_id);
     });
-  }, [routeId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const selectedRoute = routes.find((r) => r.route_id === routeId);
 
@@ -81,6 +83,7 @@ export default function ReportScreen() {
         delay_minutes: reportType === "delay" && delay ? Number(delay) : undefined,
         fare: reportType === "fare" && fare ? Number(fare) : undefined,
         note: note.trim() || undefined,
+        device_id: await getDeviceId(),
       };
       await api.submitReport(body);
       setStatus({ ok: true, msg: "Report submitted. +1 karma 🎉" });

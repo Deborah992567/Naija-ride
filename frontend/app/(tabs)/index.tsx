@@ -8,6 +8,7 @@ import * as Location from "expo-location";
 import LiveMap from "@/src/components/LiveMap";
 import FilterChips from "@/src/components/FilterChips";
 import CrowdBars from "@/src/components/CrowdBars";
+import CitySwitcher from "@/src/components/CitySwitcher";
 import { api, type Report, type Route } from "@/src/lib/api";
 import { colors, radii, spacing, vehicleMeta } from "@/src/lib/theme";
 import { formatRelative } from "@/src/lib/time";
@@ -36,6 +37,7 @@ export default function MapScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const [filter, setFilter] = useState("all");
+  const [city, setCity] = useState("all");
   const [search, setSearch] = useState("");
   const [routes, setRoutes] = useState<Route[]>([]);
   const [vehicles, setVehicles] = useState<Report[]>([]);
@@ -55,7 +57,7 @@ export default function MapScreen() {
   const refresh = useCallback(async () => {
     try {
       const [r, v] = await Promise.all([
-        api.listRoutes(),
+        api.listRoutes(city === "all" ? undefined : { city }),
         api.liveVehicles(filter === "all" ? undefined : filter, 60),
       ]);
       setRoutes(r);
@@ -65,7 +67,7 @@ export default function MapScreen() {
     } finally {
       setLoading(false);
     }
-  }, [filter]);
+  }, [filter, city]);
 
   useEffect(() => {
     refresh();
@@ -91,7 +93,9 @@ export default function MapScreen() {
   }, [routes]);
 
   const filteredRoutes = useMemo(() => {
-    const list = filter === "all" ? routes : routes.filter((r) => r.vehicle_type === filter);
+    let list = routes;
+    if (city !== "all") list = list.filter((r) => r.city === city);
+    if (filter !== "all") list = list.filter((r) => r.vehicle_type === filter);
     if (!search.trim()) return list;
     const q = search.toLowerCase();
     return list.filter(
@@ -100,7 +104,7 @@ export default function MapScreen() {
         r.city.toLowerCase().includes(q) ||
         r.stops.some((s) => s.name.toLowerCase().includes(q)),
     );
-  }, [routes, filter, search]);
+  }, [routes, city, filter, search]);
 
   const filteredVehicles = useMemo(
     () => (filter === "all" ? vehicles : vehicles.filter((v) => v.vehicle_type === filter)),
@@ -216,11 +220,12 @@ export default function MapScreen() {
             ) : null}
           </View>
         </View>
+        <CitySwitcher value={city} onChange={setCity} />
         <FilterChips items={FILTERS} value={filter} onChange={setFilter} testIDPrefix="map-filter" />
       </SafeAreaView>
 
       {/* Live counter pill */}
-      <View style={[styles.livePill, { top: insets.top + 130 }]} pointerEvents="none">
+      <View style={[styles.livePill, { top: insets.top + 156 }]} pointerEvents="none">
         {loading ? (
           <ActivityIndicator size="small" color={colors.primary} />
         ) : (
@@ -233,7 +238,7 @@ export default function MapScreen() {
         )}
       </View>
 
-      <View style={[styles.walkWrap, { top: insets.top + 178 }]}>
+      <View style={[styles.walkWrap, { top: insets.top + 204 }]}>
         {walkingRoute && walkingTo ? (
           <TouchableOpacity style={styles.walkResult} onPress={() => { setWalkingRoute(null); setWalkingTo(null); }} testID="walking-route-clear">
             <Ionicons name="walk" size={18} color="#2563EB" />

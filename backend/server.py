@@ -52,6 +52,7 @@ class User(Base):
     picture: Mapped[Optional[str]] = mapped_column(Text)
     karma: Mapped[int] = mapped_column(Integer, default=0)
     provider: Mapped[str] = mapped_column(String(20), default="password")
+    is_admin: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
@@ -62,6 +63,30 @@ class UserSession(Base):
     user_id: Mapped[str] = mapped_column(String(50), index=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class PasswordReset(Base):
+    __tablename__ = "password_resets"
+    token: Mapped[str] = mapped_column(String(100), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(50), index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    used: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class RouteFollow(Base):
+    __tablename__ = "route_follows"
+    follow_id: Mapped[str] = mapped_column(String(60), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(50), index=True)
+    route_id: Mapped[str] = mapped_column(String(50), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class DeviceToken(Base):
+    __tablename__ = "device_tokens"
+    user_id: Mapped[str] = mapped_column(String(50), primary_key=True)
+    push_token: Mapped[str] = mapped_column(String(255))
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 class Route(Base):
@@ -89,6 +114,8 @@ class Report(Base):
     delay_minutes: Mapped[Optional[int]] = mapped_column(Integer)
     fare: Mapped[Optional[float]] = mapped_column(Float)
     note: Mapped[Optional[str]] = mapped_column(Text)
+    device_id: Mapped[Optional[str]] = mapped_column(String(100), index=True)
+    status: Mapped[str] = mapped_column(String(20), default="visible")
     user_id: Mapped[str] = mapped_column(String(50))
     user_name: Mapped[Optional[str]] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(DateTime, index=True, default=lambda: datetime.now(timezone.utc))
@@ -108,6 +135,15 @@ async def lifespan(app: FastAPI):
     # Create tables
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # Idempotent migrations for columns added to pre-existing tables
+        # (MariaDB supports ADD COLUMN IF NOT EXISTS).
+        for stmt in [
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin INT DEFAULT 0",
+            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS device_id VARCHAR(100)",
+            "ALTER TABLE reports ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'visible'",
+            "ALTER TABLE reports ADD INDEX IF NOT EXISTS ix_reports_device_id (device_id)",
+        ]:
+            await conn.exec_driver_sql(stmt)
     
     # Seed
     async with AsyncSessionLocal() as session:
@@ -152,6 +188,30 @@ class GoogleSessionReq(BaseModel):
     session_id: str
 
 
+class ForgotReq(BaseModel):
+    email: EmailStr
+
+
+class ForgotOut(BaseModel):
+    ok: bool
+    message: str
+    reset_token: Optional[str] = None  # dev convenience — email the token in production
+
+
+class ResetReq(BaseModel):
+    token: str
+    password: str = Field(..., min_length=6)
+
+
+class PushTokenReq(BaseModel):
+    push_token: str
+
+
+class FollowOut(BaseModel):
+    route_id: str
+    created_at: datetime
+
+
 class UserOut(BaseModel):
     user_id: str
     email: str
@@ -159,6 +219,7 @@ class UserOut(BaseModel):
     picture: Optional[str] = None
     karma: int = 0
     provider: str
+    is_admin: int = 0
     created_at: datetime
 
 
@@ -209,6 +270,7 @@ class ReportIn(BaseModel):
     delay_minutes: Optional[int] = None
     fare: Optional[float] = None
     note: Optional[str] = None
+    device_id: Optional[str] = None
 
 
 class ReportOut(BaseModel):
@@ -222,6 +284,8 @@ class ReportOut(BaseModel):
     delay_minutes: Optional[int] = None
     fare: Optional[float] = None
     note: Optional[str] = None
+    device_id: Optional[str] = None
+    status: str = "visible"
     user_id: str
     user_name: Optional[str] = None
     created_at: datetime
@@ -234,6 +298,19 @@ class EtaOut(BaseModel):
     last_seen_minutes_ago: Optional[int]
     distance_km: Optional[float]
     confidence: Literal["high", "medium", "low", "none"]
+
+
+class CrowdHour(BaseModel):
+    hour: int
+    avg_crowd: Optional[str]  # empty / moderate / packed (rounded average)
+    report_count: int
+
+
+class CrowdAnalyticsOut(BaseModel):
+    route_id: str
+    days: int
+    total_reports: int
+    by_hour: List[CrowdHour]
 
 
 # ============================ AUTH HELPERS ============================
@@ -287,6 +364,13 @@ async def current_user(request: Request, db_sess: AsyncSession = Depends(get_db)
     raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 
+async def optional_user(request: Request, db_sess: AsyncSession = Depends(get_db)) -> Optional[User]:
+    try:
+        return await current_user(request, db_sess)
+    except HTTPException:
+        return None
+
+
 def user_to_out(u: dict) -> UserOut:
     return UserOut(
         user_id=u["user_id"],
@@ -295,6 +379,7 @@ def user_to_out(u: dict) -> UserOut:
         picture=u.get("picture"),
         karma=u.get("karma", 0),
         provider=u.get("provider", "password"),
+        is_admin=u.get("is_admin", 0),
         created_at=u["created_at"],
     )
 
@@ -316,6 +401,7 @@ async def register(data: RegisterReq, db_sess: AsyncSession = Depends(get_db)):
         "picture": None,
         "karma": 0,
         "provider": "password",
+        "is_admin": 0,
         "created_at": now,
         "updated_at": now,
     }
@@ -396,6 +482,59 @@ async def logout(user: User = Depends(current_user), db_sess: AsyncSession = Dep
     return {"ok": True}
 
 
+@api.post("/auth/forgot", response_model=ForgotOut)
+async def forgot(data: ForgotReq, db_sess: AsyncSession = Depends(get_db)):
+    """Generate a password-reset token. In production, email the token to the
+    user; in this dev build the token is returned so the flow is testable."""
+    res = await db_sess.execute(select(User).where(User.email == data.email.lower()))
+    user = res.scalar_one_or_none()
+    if not user:
+        return ForgotOut(ok=True, message="If that email exists, a reset link has been sent.")
+    if user.provider == "google":
+        return ForgotOut(ok=True, message="This account uses Google sign-in — use 'Continue with Google'.")
+
+    token = f"rst_{uuid.uuid4().hex[:32]}"
+    now = datetime.now(timezone.utc)
+    await db_sess.execute(
+        delete(PasswordReset).where(PasswordReset.user_id == user.user_id)
+    )
+    db_sess.add(PasswordReset(
+        token=token, user_id=user.user_id,
+        expires_at=now + timedelta(hours=1), created_at=now
+    ))
+    await db_sess.commit()
+    logger.info("Password reset requested for %s (token %s)", user.email, token)
+    return ForgotOut(
+        ok=True,
+        message="A reset link has been sent to your email.",
+        reset_token=token,
+    )
+
+
+@api.post("/auth/reset")
+async def reset(data: ResetReq, db_sess: AsyncSession = Depends(get_db)):
+    res = await db_sess.execute(select(PasswordReset).where(PasswordReset.token == data.token))
+    record = res.scalar_one_or_none()
+    now = datetime.now(timezone.utc)
+    if not record or record.used:
+        raise HTTPException(status_code=400, detail="Invalid or already-used reset token")
+    expires = record.expires_at.replace(tzinfo=timezone.utc) if record.expires_at.tzinfo is None else record.expires_at
+    if expires < now:
+        raise HTTPException(status_code=400, detail="Reset token has expired")
+
+    user_res = await db_sess.execute(select(User).where(User.user_id == record.user_id))
+    user = user_res.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=400, detail="Account no longer exists")
+
+    user.password_hash = hash_pw(data.password)
+    user.updated_at = now
+    record.used = 1
+    await db_sess.execute(delete(UserSession).where(UserSession.user_id == user.user_id))
+    await db_sess.commit()
+    return {"ok": True, "message": "Password updated. Sign in with your new password."}
+
+
 # ============================ ROUTES ============================
 @api.get("/routes", response_model=List[RouteOut])
 async def list_routes(city: Optional[str] = None, vehicle_type: Optional[str] = None, db_sess: AsyncSession = Depends(get_db)):
@@ -457,7 +596,22 @@ async def submit_report(data: ReportIn, user: User = Depends(current_user), db_s
         raise HTTPException(status_code=404, detail="Route not found")
     now = datetime.now(timezone.utc)
     report_id = f"rep_{uuid.uuid4().hex[:12]}"
-    
+
+    # Cooldown: same user + same route within 2 minutes is a duplicate
+    cooldown_secs = 120
+    recent = await db_sess.execute(
+        select(Report).where(
+            Report.user_id == user.user_id,
+            Report.route_id == data.route_id,
+            Report.created_at >= now - timedelta(seconds=cooldown_secs),
+        ).order_by(Report.created_at.desc()).limit(1)
+    )
+    if recent.scalar_one_or_none():
+        raise HTTPException(
+            status_code=429,
+            detail=f"Please wait {cooldown_secs // 60} minute before reporting this route again.",
+        )
+
     new_report = Report(
         report_id=report_id,
         route_id=data.route_id,
@@ -469,43 +623,226 @@ async def submit_report(data: ReportIn, user: User = Depends(current_user), db_s
         delay_minutes=data.delay_minutes,
         fare=data.fare,
         note=data.note,
+        device_id=data.device_id,
+        status="visible",
         user_id=user.user_id,
         user_name=user.name,
         created_at=now,
     )
     db_sess.add(new_report)
-    
+
     # +1 karma per report
     user.karma += 1
     await db_sess.commit()
+
+    # Notify followers of this route (fire-and-forget)
+    await _notify_route_followers(db_sess, new_report)
     return ReportOut(**new_report.__dict__)
 
 
+async def _notify_route_followers(db_sess: AsyncSession, report: Report):
+    try:
+        follows = await db_sess.execute(
+            select(RouteFollow).where(RouteFollow.route_id == report.route_id)
+        )
+        follower_ids = {f.user_id for f in follows.scalars().all()}
+        if not follower_ids:
+            return
+        tokens = await db_sess.execute(
+            select(DeviceToken).where(DeviceToken.user_id.in_(follower_ids))
+        )
+        push_tokens = [t.push_token for t in tokens.scalars().all()]
+        if not push_tokens:
+            return
+        route_name = report.route_id  # fallback
+        route_res = await db_sess.execute(select(Route).where(Route.route_id == report.route_id))
+        route = route_res.scalar_one_or_none()
+        if route:
+            route_name = route.name
+
+        title = f"{report.vehicle_type.capitalize()} on {route_name}"
+        body = f"{report.user_name or 'A rider'} just reported a {report.type}."
+        if report.crowd_level:
+            body += f" Crowd: {report.crowd_level}."
+        if report.delay_minutes is not None:
+            body += f" Delay: {report.delay_minutes} min."
+
+        async with httpx.AsyncClient(timeout=10.0) as http:
+            resp = await http.post(
+                "https://exp.host/--/api/v2/push/send",
+                json=[{
+                    "to": t,
+                    "title": title,
+                    "body": body,
+                    "data": {"route_id": report.route_id, "report_id": report.report_id},
+                    "sound": "default",
+                } for t in push_tokens],
+            )
+            if resp.status_code not in (200, 201):
+                logger.warning("Expo push returned %s: %s", resp.status_code, resp.text[:200])
+    except Exception as e:  # noqa: BLE001 - push failures must never break report submission
+        logger.warning("Push notification dispatch failed: %s", e)
+
+
 @api.get("/reports", response_model=List[ReportOut])
-async def list_reports(route_id: Optional[str] = None, minutes: int = 60, limit: int = 200, db_sess: AsyncSession = Depends(get_db)):
+async def list_reports(route_id: Optional[str] = None, user_id: Optional[str] = None, minutes: int = 60, limit: int = 200, include_hidden: bool = False, user: Optional[User] = Depends(optional_user), db_sess: AsyncSession = Depends(get_db)):
     since = datetime.now(timezone.utc) - timedelta(minutes=minutes)
     stmt = select(Report).where(Report.created_at >= since)
     if route_id:
         stmt = stmt.where(Report.route_id == route_id)
-    
+    if user_id:
+        stmt = stmt.where(Report.user_id == user_id)
+    if not (include_hidden and user and user.is_admin):
+        stmt = stmt.where(Report.status == "visible")
+
     stmt = stmt.order_by(Report.created_at.desc()).limit(limit)
     res = await db_sess.execute(stmt)
     return [ReportOut(**r[0].__dict__) for r in res.all()]
+
+
+@api.post("/reports/{report_id}/flag")
+async def flag_report(report_id: str, user: User = Depends(current_user), db_sess: AsyncSession = Depends(get_db)):
+    """Mark a report as misleading/spam. Hides it from everyone but admins
+    and the reporter; admins can delete it outright."""
+    res = await db_sess.execute(select(Report).where(Report.report_id == report_id))
+    report = res.scalar_one_or_none()
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found")
+    report.status = "flagged"
+    await db_sess.commit()
+    return {"ok": True, "report_id": report_id, "status": "flagged"}
+
+
+@api.delete("/reports/{report_id}")
+async def delete_report(report_id: str, user: User = Depends(current_user), db_sess: AsyncSession = Depends(get_db)):
+    res = await db_sess.execute(select(Report).where(Report.report_id == report_id))
+    report = res.scalar_one_or_none()
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found")
+    if not (user.is_admin or report.user_id == user.user_id):
+        raise HTTPException(status_code=403, detail="Only admins or the reporter can delete this report")
+    await db_sess.execute(delete(Report).where(Report.report_id == report_id))
+    await db_sess.commit()
+    return {"ok": True}
 
 
 @api.get("/vehicles/live", response_model=List[ReportOut])
 async def live_vehicles(minutes: int = 15, vehicle_type: Optional[str] = None, db_sess: AsyncSession = Depends(get_db)):
     since = datetime.now(timezone.utc) - timedelta(minutes=minutes)
     stmt = select(Report).where(
-        Report.created_at >= since, 
-        Report.type.in_(["sighting", "onboard"])
+        Report.created_at >= since,
+        Report.type.in_(["sighting", "onboard"]),
+        Report.status == "visible",
     )
     if vehicle_type:
         stmt = stmt.where(Report.vehicle_type == vehicle_type)
-    
+
     stmt = stmt.order_by(Report.created_at.desc()).limit(500)
     res = await db_sess.execute(stmt)
-    return [ReportOut(**r[0].__dict__) for r in res.all()]
+    docs = [r[0] for r in res.all()]
+
+    # Dedup: one live vehicle per device_id (keep most recent), then cluster
+    # anonymous reports that sit within ~800m (likely the same vehicle).
+    by_device: dict[str, Report] = {}
+    anonymous: list[Report] = []
+    for report in docs:
+        if report.device_id:
+            if report.device_id not in by_device or report.created_at > by_device[report.device_id].created_at:
+                by_device[report.device_id] = report
+        else:
+            anonymous.append(report)
+
+    clusters: list[Report] = []
+    for report in sorted(anonymous, key=lambda r: r.created_at, reverse=True):
+        placed = False
+        for i, rep in enumerate(clusters):
+            if _haversine_km(report.lat, report.lng, rep.lat, rep.lng) <= 0.8:
+                if report.created_at > rep.created_at:
+                    clusters[i] = report
+                placed = True
+                break
+        if not placed:
+            clusters.append(report)
+
+    merged = list(by_device.values()) + clusters
+    merged.sort(key=lambda r: r.created_at, reverse=True)
+    return [ReportOut(**r.__dict__) for r in merged]
+
+
+# ============================ FOLLOWS / NOTIFICATIONS ============================
+@api.post("/me/push-token")
+async def register_push_token(data: PushTokenReq, user: User = Depends(current_user), db_sess: AsyncSession = Depends(get_db)):
+    existing = await db_sess.execute(select(DeviceToken).where(DeviceToken.user_id == user.user_id))
+    record = existing.scalar_one_or_none()
+    if record:
+        record.push_token = data.push_token
+        record.updated_at = datetime.now(timezone.utc)
+    else:
+        db_sess.add(DeviceToken(user_id=user.user_id, push_token=data.push_token, updated_at=datetime.now(timezone.utc)))
+    await db_sess.commit()
+    return {"ok": True}
+
+
+@api.get("/follows", response_model=List[FollowOut])
+async def list_follows(user: User = Depends(current_user), db_sess: AsyncSession = Depends(get_db)):
+    res = await db_sess.execute(select(RouteFollow).where(RouteFollow.user_id == user.user_id).order_by(RouteFollow.created_at.desc()))
+    return [FollowOut(route_id=f.route_id, created_at=f.created_at) for f in res.scalars().all()]
+
+
+@api.post("/follows/{route_id}", response_model=FollowOut)
+async def follow_route(route_id: str, user: User = Depends(current_user), db_sess: AsyncSession = Depends(get_db)):
+    route_res = await db_sess.execute(select(Route).where(Route.route_id == route_id))
+    if not route_res.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Route not found")
+    existing = await db_sess.execute(select(RouteFollow).where(RouteFollow.user_id == user.user_id, RouteFollow.route_id == route_id))
+    if existing.scalar_one_or_none():
+        return FollowOut(route_id=route_id, created_at=datetime.now(timezone.utc))
+    now = datetime.now(timezone.utc)
+    follow = RouteFollow(follow_id=f"fol_{uuid.uuid4().hex[:12]}", user_id=user.user_id, route_id=route_id, created_at=now)
+    db_sess.add(follow)
+    await db_sess.commit()
+    return FollowOut(route_id=route_id, created_at=now)
+
+
+@api.delete("/follows/{route_id}")
+async def unfollow_route(route_id: str, user: User = Depends(current_user), db_sess: AsyncSession = Depends(get_db)):
+    await db_sess.execute(delete(RouteFollow).where(RouteFollow.user_id == user.user_id, RouteFollow.route_id == route_id))
+    await db_sess.commit()
+    return {"ok": True}
+
+
+# ============================ ANALYTICS ============================
+@api.get("/analytics/crowd", response_model=CrowdAnalyticsOut)
+async def crowd_analytics(route_id: str, days: int = 7, db_sess: AsyncSession = Depends(get_db)):
+    route_res = await db_sess.execute(select(Route).where(Route.route_id == route_id))
+    if not route_res.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Route not found")
+    since = datetime.now(timezone.utc) - timedelta(days=min(days, 60))
+    res = await db_sess.execute(
+        select(Report).where(
+            Report.route_id == route_id,
+            Report.crowd_level.isnot(None),
+            Report.status == "visible",
+            Report.created_at >= since,
+        )
+    )
+    docs = [r[0] for r in res.all()]
+    buckets: dict[int, list[int]] = {h: [] for h in range(24)}
+    for report in docs:
+        rt = report.created_at.replace(tzinfo=timezone.utc) if report.created_at.tzinfo is None else report.created_at
+        buckets[rt.hour].append(0 if report.crowd_level == "empty" else 1 if report.crowd_level == "moderate" else 2)
+
+    CROWD_BY_LEVEL = ["empty", "moderate", "packed"]
+    by_hour = []
+    for hour in range(24):
+        values = buckets[hour]
+        if not values:
+            by_hour.append(CrowdHour(hour=hour, avg_crowd=None, report_count=0))
+        else:
+            avg = round(sum(values) / len(values))
+            by_hour.append(CrowdHour(hour=hour, avg_crowd=CROWD_BY_LEVEL[avg], report_count=len(values)))
+
+    return CrowdAnalyticsOut(route_id=route_id, days=min(days, 60), total_reports=len(docs), by_hour=by_hour)
 
 
 # ============================ ETA ============================
@@ -546,7 +883,30 @@ async def eta(route_id: str, stop_id: int, db_sess: AsyncSession = Depends(get_d
     speed = speed_map.get(latest.vehicle_type, 22.0)
     travel_min = int((dist / speed) * 60)
     eta_min = max(0, travel_min - last_seen_min)
-    confidence = "high" if last_seen_min <= 5 and len(docs) >= 3 else "medium" if last_seen_min <= 15 else "low"
+
+    # Karma-weighted confidence: trustworthy reporters + freshness + corroboration
+    # push the rating up. Only reports newer than 30 min count (filtered above).
+    if docs:
+        uids = {r.user_id for r in docs}
+        users_res = await db_sess.execute(select(User).where(User.user_id.in_(uids)))
+        karma_map = {u.user_id: u.karma for u in users_res.scalars().all()}
+        avg_karma = sum(karma_map.get(r.user_id, 0) for r in docs) / len(docs)
+    else:
+        avg_karma = 0.0
+
+    score = 1
+    if last_seen_min <= 15:
+        score = 2
+    if last_seen_min <= 5:
+        score = 3
+    if len(docs) >= 3:
+        score += 1
+    if avg_karma >= 5:
+        score += 1
+    if avg_karma >= 20:
+        score += 1
+
+    confidence = "high" if score >= 4 else "medium" if score >= 2 else "low"
     return EtaOut(
         route_id=route_id,
         stop_id=stop_id,

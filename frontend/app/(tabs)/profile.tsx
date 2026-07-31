@@ -1,25 +1,33 @@
-// Profile: user info, karma, recent reports, sign out.
+// Profile: user info, karma, recent reports, followed routes, sign out.
 import { useCallback, useEffect, useState } from "react";
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Image, ActivityIndicator } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useFocusEffect } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "@/src/lib/auth";
-import { api, type Report } from "@/src/lib/api";
+import { api, type Report, type Route } from "@/src/lib/api";
+import { loadFollowsFromServer } from "@/src/lib/favorites";
 import { colors, radii, spacing, vehicleMeta } from "@/src/lib/theme";
 import { formatRelative } from "@/src/lib/time";
 
 export default function ProfileScreen() {
+  const router = useRouter();
   const { user, signOut, refresh } = useAuth();
   const [reports, setReports] = useState<Report[]>([]);
+  const [followedRoutes, setFollowedRoutes] = useState<Route[]>([]);
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
     if (!user) return;
     setLoading(true);
     try {
-      const all = await api.listReports(undefined, 60 * 24 * 14); // last 2 weeks
-      setReports(all.filter((r) => r.user_id === user.user_id).slice(0, 20));
+      const [all, followIds, allRoutes] = await Promise.all([
+        api.listReports(undefined, 60 * 24 * 14, user.user_id), // last 2 weeks, own reports
+        loadFollowsFromServer(),
+        api.listRoutes(),
+      ]);
+      setReports(all.slice(0, 20));
+      setFollowedRoutes(allRoutes.filter((r) => followIds.has(r.route_id)));
     } finally {
       setLoading(false);
     }
@@ -90,6 +98,34 @@ export default function ProfileScreen() {
             <Text style={styles.statLabel}>{user.karma >= 10 ? "Trusted" : "Rising"}</Text>
           </View>
         </View>
+
+        {followedRoutes.length > 0 && (
+          <>
+            <Text style={styles.section}>Followed routes</Text>
+            <View style={styles.followList}>
+              {followedRoutes.map((r) => {
+                const meta = vehicleMeta[r.vehicle_type] || vehicleMeta.bus;
+                return (
+                  <TouchableOpacity
+                    key={r.route_id}
+                    style={styles.followRow}
+                    onPress={() => router.push(`/route/${r.route_id}`)}
+                    testID={`profile-follow-${r.route_id}`}
+                  >
+                    <View style={[styles.reportIcon, { backgroundColor: meta.color }]}>
+                      <Ionicons name={meta.icon} size={14} color={r.vehicle_type === "danfo" ? "#1A1A1A" : "#fff"} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.reportTitle} numberOfLines={1}>{r.name}</Text>
+                      <Text style={styles.reportSub}>{r.city} · {r.stops.length} stops</Text>
+                    </View>
+                    <Ionicons name="chevron-forward" size={18} color={colors.textSecondary} />
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          </>
+        )}
 
         <Text style={styles.section}>Recent reports</Text>
         {loading ? (
@@ -199,6 +235,17 @@ const styles = StyleSheet.create({
   reportIcon: { width: 32, height: 32, borderRadius: 16, alignItems: "center", justifyContent: "center" },
   reportTitle: { fontSize: 14, fontWeight: "700", color: colors.textPrimary, textTransform: "capitalize" },
   reportSub: { fontSize: 11, color: colors.textSecondary, marginTop: 2 },
+  followList: { gap: 8, marginBottom: 4 },
+  followRow: {
+    backgroundColor: colors.card,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
   reportTag: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 999, backgroundColor: colors.input },
   reportTagText: { fontSize: 10, fontWeight: "800", color: colors.textSecondary, textTransform: "uppercase" },
   signOutBtn: {

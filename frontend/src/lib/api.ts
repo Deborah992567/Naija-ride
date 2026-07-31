@@ -1,7 +1,7 @@
 // API client + auth helpers for Transport Tracker
 import { storage } from "@/src/utils/storage";
 
-const BASE_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
+const BASE_URL = process.env.EXPO_PUBLIC_BACKEND_URL || "http://localhost:8000";
 export const API = `${BASE_URL}/api`;
 const TOKEN_KEY = "tt_token";
 
@@ -54,6 +54,24 @@ export type Eta = {
   confidence: "high" | "medium" | "low" | "none";
 };
 
+export type CrowdHour = {
+  hour: number;
+  avg_crowd: "empty" | "moderate" | "packed" | null;
+  report_count: number;
+};
+
+export type CrowdAnalytics = {
+  route_id: string;
+  days: number;
+  total_reports: number;
+  by_hour: CrowdHour[];
+};
+
+export type Follow = {
+  route_id: string;
+  created_at: string;
+};
+
 export async function getToken(): Promise<string | null> {
   return (await storage.secureGet<string>(TOKEN_KEY, "")) || null;
 }
@@ -63,6 +81,8 @@ export async function setToken(token: string) {
 export async function clearToken() {
   await storage.secureRemove(TOKEN_KEY);
 }
+
+const ROUTES_CACHE_KEY = "routes_cache";
 
 async function request<T>(path: string, opts: RequestInit = {}, withAuth = false): Promise<T> {
   const headers: Record<string, string> = {
@@ -104,11 +124,41 @@ export const api = {
     }),
   me: () => request<User>("/auth/me", {}, true),
   logout: () => request<{ ok: boolean }>("/auth/logout", { method: "POST" }, true),
+  forgotPassword: (email: string) =>
+    request<{ ok: boolean; message: string; reset_token?: string | null }>("/auth/forgot", {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    }),
+  resetPassword: (token: string, password: string) =>
+    request<{ ok: boolean; message: string }>("/auth/reset", {
+      method: "POST",
+      body: JSON.stringify({ token, password }),
+    }),
 
   // Routes
-  listRoutes: (params?: { city?: string; vehicle_type?: string }) => {
+  listRoutes: async (params?: { city?: string; vehicle_type?: string }) => {
     const qs = new URLSearchParams(params as Record<string, string>).toString();
-    return request<Route[]>(`/routes${qs ? `?${qs}` : ""}`);
+    try {
+      const routes = await request<Route[]>(`/routes${qs ? `?${qs}` : ""}`);
+      if (!params) {
+        await storage.setItem(ROUTES_CACHE_KEY, JSON.stringify(routes));
+      }
+      return routes;
+    } catch (e) {
+      // Offline fallback: serve the last-known route list.
+      const cached = await storage.getItem<string>(ROUTES_CACHE_KEY, "");
+      if (cached) {
+        const parsed = JSON.parse(cached) as Route[];
+        if (params) {
+          return parsed.filter((r) =>
+            (!params.city || r.city === params.city) &&
+            (!params.vehicle_type || r.vehicle_type === params.vehicle_type),
+          );
+        }
+        return parsed;
+      }
+      throw e;
+    }
   },
   getRoute: (route_id: string) => request<Route>(`/routes/${route_id}`),
   createRoute: (body: Partial<Route>) =>
@@ -125,13 +175,19 @@ export const api = {
     delay_minutes?: number;
     fare?: number;
     note?: string;
+    device_id?: string;
   }) => request<Report>("/reports", { method: "POST", body: JSON.stringify(body) }, true),
-  listReports: (route_id?: string, minutes = 60) => {
+  listReports: (route_id?: string, minutes = 60, user_id?: string) => {
     const qs = new URLSearchParams();
     if (route_id) qs.set("route_id", route_id);
+    if (user_id) qs.set("user_id", user_id);
     qs.set("minutes", String(minutes));
     return request<Report[]>(`/reports?${qs.toString()}`);
   },
+  flagReport: (report_id: string) =>
+    request<{ ok: boolean; status: string }>(`/reports/${report_id}/flag`, { method: "POST" }, true),
+  deleteReport: (report_id: string) =>
+    request<{ ok: boolean }>(`/reports/${report_id}`, { method: "DELETE" }, true),
   liveVehicles: (vehicle_type?: string, minutes = 15) => {
     const qs = new URLSearchParams();
     if (vehicle_type) qs.set("vehicle_type", vehicle_type);
@@ -140,4 +196,20 @@ export const api = {
   },
   eta: (route_id: string, stop_id: number) =>
     request<Eta>(`/eta?route_id=${route_id}&stop_id=${stop_id}`),
+
+  // Follows / notifications
+  listFollows: () => request<Follow[]>("/follows", {}, true),
+  followRoute: (route_id: string) =>
+    request<Follow>(`/follows/${route_id}`, { method: "POST" }, true),
+  unfollowRoute: (route_id: string) =>
+    request<{ ok: boolean }>(`/follows/${route_id}`, { method: "DELETE" }, true),
+  registerPushToken: (push_token: string) =>
+    request<{ ok: boolean }>("/me/push-token", {
+      method: "POST",
+      body: JSON.stringify({ push_token }),
+    }, true),
+
+  // Analytics
+  crowdAnalytics: (route_id: string, days = 7) =>
+    request<CrowdAnalytics>(`/analytics/crowd?route_id=${route_id}&days=${days}`),
 };

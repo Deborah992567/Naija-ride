@@ -101,3 +101,133 @@
 #====================================================================================================
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
+
+## user_problem_statement: "go through application, complete the project and fix the errors"
+## backend:
+##   - task: "Auth (register/login/google-session/me/logout)"
+##     implemented: true
+##     working: true
+##     file: "backend/server.py"
+##     stuck_count: 0
+##     priority: "high"
+##     needs_retesting: false
+##     status_history:
+##       - working: true
+##         agent: "main"
+##         comment: "19/19 pytest tests pass against local MariaDB (port 8001; port 8000 occupied by unrelated webguard app)."
+##   - task: "Routes CRUD + seeding"
+##     implemented: true
+##     working: true
+##     file: "backend/server.py"
+##     stuck_count: 0
+##     priority: "high"
+##     needs_retesting: false
+##     status_history:
+##       - working: true
+##         agent: "main"
+##         comment: "4 seeded routes verified via GET /routes and GET /routes/{id}."
+##   - task: "Reports, live vehicles, ETA"
+##     implemented: true
+##     working: true
+##     file: "backend/server.py"
+##     stuck_count: 0
+##     priority: "high"
+##     needs_retesting: false
+##     status_history:
+##       - working: true
+##         agent: "main"
+##         comment: "Added user_id filter to GET /reports for profile screen. Karma increment + ETA confidence verified."
+##   - task: "Dependency setup"
+##     implemented: true
+##     working: true
+##     file: "backend/requirements.txt"
+##     stuck_count: 0
+##     priority: "high"
+##     needs_retesting: false
+##     status_history:
+##       - working: true
+##         agent: "main"
+##         comment: "requirements.txt was stale (MongoDB-era). Replaced with packages server.py actually needs (sqlalchemy, asyncmy, greenlet, httpx). venv created at backend/.venv (Python 3.12)."
+## frontend:
+##   - task: "Build/type/lint verification"
+##     implemented: true
+##     working: true
+##     file: "frontend"
+##     stuck_count: 0
+##     priority: "high"
+##     needs_retesting: false
+##     status_history:
+##       - working: true
+##         agent: "main"
+##         comment: "tsc --noEmit clean, expo lint clean, expo export bundles for both iOS and web."
+##   - task: "report.tsx route refetch loop"
+##     implemented: true
+##     working: true
+##     file: "frontend/app/(tabs)/report.tsx"
+##     stuck_count: 0
+##     priority: "medium"
+##     needs_retesting: false
+##     status_history:
+##       - working: true
+##         agent: "main"
+##         comment: "useEffect deps changed from [routeId] to [] so tapping a route pill no longer re-fetches all routes."
+##   - task: "profile.tsx unscoped reports fetch"
+##     implemented: true
+##     working: true
+##     file: "frontend/app/(tabs)/profile.tsx"
+##     stuck_count: 0
+##     priority: "medium"
+##     needs_retesting: false
+##     status_history:
+##       - working: true
+##         agent: "main"
+##         comment: "Now uses server-side user_id filter instead of downloading 2 weeks of reports and filtering client-side."
+##   - task: "drive.tsx pull-to-refresh"
+##     implemented: true
+##     working: true
+##     file: "frontend/app/(tabs)/drive.tsx"
+##     stuck_count: 0
+##     priority: "low"
+##     needs_retesting: false
+##     status_history:
+##       - working: true
+##         agent: "main"
+##         comment: "Error copy said 'Pull down and try again' but no RefreshControl existed; added it."
+##   - task: "API layer env resilience"
+##     implemented: true
+##     working: true
+##     file: "frontend/src/lib/api.ts"
+##     stuck_count: 0
+##     priority: "medium"
+##     needs_retesting: false
+##     status_history:
+##       - working: true
+##         agent: "main"
+##         comment: "Added fallback default (http://localhost:8000) so app no longer breaks when untracked .env is absent. Added .env.example files for backend and frontend."
+##   - task: "Cleanup (junk file, app.json splash, testIds registry)"
+##     implemented: true
+##     working: true
+##     file: "frontend"
+##     stuck_count: 0
+##     priority: "low"
+##     needs_retesting: false
+##     status_history:
+##       - working: true
+##         agent: "main"
+##         comment: "Removed committed junk file frontend/=0.24.0, removed dead src/utils/fonts, fixed app.json splash-icon.png -> splash-image.png, synced constants/testIds with real testIDs."
+## metadata:
+##   created_by: "main_agent"
+##   version: "1.0"
+##   test_sequence: 1
+##   run_ui: false
+
+## test_plan:
+##   current_focus:
+##     - "None (all tasks passing)"
+##   stuck_tasks: []
+##   test_all: false
+##   test_priority: "high_first"
+
+## agent_communication:
+##   - agent: "main"
+##     message: "Backend runs locally (uvicorn, port 8001) with MariaDB. All 19 API tests pass; frontend typecheck, lint, and iOS/web bundles are clean."

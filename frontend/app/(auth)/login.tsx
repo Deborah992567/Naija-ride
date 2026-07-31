@@ -126,6 +126,14 @@ export default function Login() {
           </View>
 
           <TouchableOpacity
+            onPress={() => router.push("/(auth)/forgot")}
+            style={styles.forgotRow}
+            testID="login-forgot-link"
+          >
+            <Text style={styles.forgotText}>Forgot password?</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
             onPress={submit}
             style={[styles.primaryBtn, loading && { opacity: 0.7 }]}
             disabled={loading}
@@ -207,6 +215,8 @@ const styles = StyleSheet.create({
     borderColor: "transparent",
   },
   input: { flex: 1, fontSize: 15, color: colors.textPrimary, paddingVertical: 0 },
+  forgotRow: { alignSelf: "flex-end", marginBottom: spacing.sm, marginTop: -4 },
+  forgotText: { color: colors.primary, fontSize: 13, fontWeight: "700" },
   primaryBtn: {
     backgroundColor: colors.primary,
     height: 54,
