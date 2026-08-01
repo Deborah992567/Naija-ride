@@ -89,6 +89,125 @@ export type Follow = {
   created_at: string;
 };
 
+// ---- Ride-hailing ----
+export type VehicleType = "car" | "keke";
+export type PaymentMethod = "cash" | "card" | "transfer";
+export type RideStatus =
+  | "requested"
+  | "accepted"
+  | "arriving"
+  | "in_progress"
+  | "completed"
+  | "cancelled";
+
+export type DriverProfile = {
+  user_id: string;
+  name: string | null;
+  vehicle_type: VehicleType;
+  vehicle_plate: string | null;
+  vehicle_color: string | null;
+  vehicle_model: string | null;
+  phone: string | null;
+  is_online: number;
+  current_lat: number | null;
+  current_lng: number | null;
+  rating: number;
+  trips_completed: number;
+};
+
+export type ZoneInfo = {
+  zone_name: string;
+  city: string;
+  disallowed_vehicle_types: VehicleType[];
+};
+
+export type RideEstimate = {
+  distance_km: number;
+  eta_minutes: number;
+  fare: number;
+  allowed: boolean;
+  reason: string | null;
+  zones: ZoneInfo[];
+  payment_methods: PaymentMethod[];
+};
+
+export type RideOut = {
+  ride_id: string;
+  rider_id: string;
+  driver: {
+    user_id: string;
+    name: string | null;
+    rating: number;
+    trips_completed: number;
+    vehicle_type: VehicleType;
+    vehicle_plate: string | null;
+    vehicle_color: string | null;
+    vehicle_model: string | null;
+    current_lat: number | null;
+    current_lng: number | null;
+  } | null;
+  vehicle_type: VehicleType;
+  pickup_lat: number;
+  pickup_lng: number;
+  pickup_address: string | null;
+  dropoff_lat: number;
+  dropoff_lng: number;
+  dropoff_address: string | null;
+  distance_km: number;
+  fare_estimate: number;
+  payment_method: PaymentMethod | null;
+  status: RideStatus;
+  driver_eta_minutes: number | null;
+  created_at: string;
+};
+
+export type TripOut = {
+  trip_id: string;
+  ride_id: string;
+  rider_id: string;
+  driver_id: string;
+  fare: number;
+  payment_method: PaymentMethod;
+  payment_status: string;
+  status: string;
+  rating_driver: number | null;
+  rating_rider: number | null;
+  started_at: string;
+  ended_at: string | null;
+};
+
+export type CardPayOut = {
+  payment_id: string;
+  authorization_url: string;
+  reference: string;
+};
+
+export type TransferOut = {
+  payment_id: string;
+  account_name: string;
+  account_number: string;
+  bank_name: string;
+  amount: number;
+  reference: string;
+  status: string;
+};
+
+export type RideEvent =
+  | { event: "connected"; role: "driver" | "rider" }
+  | { event: "ride.request"; [k: string]: unknown }
+  | { event: "ride.accepted"; ride_id: string; [k: string]: unknown }
+  | { event: "ride.status"; ride_id: string; status: RideStatus; message?: string }
+  | { event: "driver.location"; ride_id: string; lat: number; lng: number }
+  | { event: "ride.cancelled"; ride_id: string }
+  | { event: "ride.completed"; trip_id: string; ride_id: string; fare: number };
+
+export function ridesWsUrl(role: "driver" | "rider"): Promise<string> {
+  return getToken().then((t) => {
+    const wsBase = BASE_URL.replace(/^http/, "ws");
+    return `${wsBase}/api/ws/rides?token=${encodeURIComponent(t || "")}&role=${role}`;
+  });
+}
+
 export async function getToken(): Promise<string | null> {
   return (await storage.secureGet<string>(TOKEN_KEY, "")) || null;
 }
@@ -229,4 +348,76 @@ export const api = {
   // Analytics
   crowdAnalytics: (route_id: string, days = 7) =>
     request<CrowdAnalytics>(`/analytics/crowd?route_id=${route_id}&days=${days}`),
+
+  // ---- Ride-hailing: drivers ----
+  driverRegister: (body: {
+    vehicle_type: VehicleType;
+    vehicle_plate?: string;
+    vehicle_color?: string;
+    vehicle_model?: string;
+    phone?: string;
+  }) => request<DriverProfile>("/drivers/register", { method: "POST", body: JSON.stringify(body) }, true),
+  driverMe: () => request<DriverProfile>("/drivers/me", {}, true),
+  driverStatus: (is_online: boolean, lat: number, lng: number) =>
+    request<DriverProfile>("/drivers/status", {
+      method: "POST",
+      body: JSON.stringify({ is_online, lat, lng }),
+    }, true),
+  driversNearby: (lat: number, lng: number, vehicle_type?: VehicleType) => {
+    const qs = new URLSearchParams({ lat: String(lat), lng: String(lng) });
+    if (vehicle_type) qs.set("vehicle_type", vehicle_type);
+    return request<DriverProfile[]>(`/drivers/nearby?${qs.toString()}`);
+  },
+
+  // ---- Ride-hailing: zones + estimate ----
+  listZones: () => request<ZoneInfo[]>("/zones"),
+  estimateRide: (body: {
+    pickup_lat: number;
+    pickup_lng: number;
+    dropoff_lat: number;
+    dropoff_lng: number;
+    vehicle_type: VehicleType;
+  }) => request<RideEstimate>("/rides/estimate", { method: "POST", body: JSON.stringify(body) }),
+
+  // ---- Ride-hailing: ride lifecycle ----
+  requestRide: (body: {
+    pickup_lat: number;
+    pickup_lng: number;
+    pickup_address?: string;
+    dropoff_lat: number;
+    dropoff_lng: number;
+    dropoff_address?: string;
+    vehicle_type: VehicleType;
+    payment_method?: PaymentMethod;
+  }) => request<RideOut>("/rides", { method: "POST", body: JSON.stringify(body) }, true),
+  getRide: (ride_id: string) => request<RideOut>(`/rides/${ride_id}`, {}, true),
+  cancelRide: (ride_id: string) => request<RideOut>(`/rides/${ride_id}/cancel`, { method: "POST" }, true),
+  acceptRide: (ride_id: string) => request<RideOut>(`/rides/${ride_id}/accept`, { method: "POST" }, true),
+  declineRide: (ride_id: string) => request<RideOut>(`/rides/${ride_id}/decline`, { method: "POST" }, true),
+  arriveRide: (ride_id: string) => request<RideOut>(`/rides/${ride_id}/arrive`, { method: "POST" }, true),
+  startRide: (ride_id: string) => request<RideOut>(`/rides/${ride_id}/start`, { method: "POST" }, true),
+  completeRide: (ride_id: string) => request<TripOut>(`/rides/${ride_id}/complete`, { method: "POST" }, true),
+  setPaymentMethod: (ride_id: string, payment_method: PaymentMethod) =>
+    request<RideOut>(`/rides/${ride_id}/payment-method`, {
+      method: "POST",
+      body: JSON.stringify({ payment_method }),
+    }, true),
+
+  // ---- Ride-hailing: payments + rating ----
+  initCardPayment: (ride_id: string, amount: number) =>
+    request<CardPayOut>("/payments/card", {
+      method: "POST",
+      body: JSON.stringify({ ride_id, amount }),
+    }, true),
+  verifyCardPayment: (payment_id: string) =>
+    request<{ ok: boolean; status: string }>(`/payments/card/verify?payment_id=${encodeURIComponent(payment_id)}`, {
+      method: "POST",
+    }, true),
+  transferDetails: (ride_id: string) =>
+    request<TransferOut>(`/payments/transfer/${ride_id}`, {}, true),
+  rateTrip: (trip_id: string, rating: number) =>
+    request<{ ok: boolean; rating: number }>(`/trips/${trip_id}/rate`, {
+      method: "POST",
+      body: JSON.stringify({ rating }),
+    }, true),
 };
