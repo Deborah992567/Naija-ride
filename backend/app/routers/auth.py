@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.deps import current_user
 from ..core.logging import log_event
-from ..core.security import hash_pw, issue_token, verify_pw
+from ..core.security import hash_pw, issue_token, validate_password, verify_pw
 from ..db import get_db
 from ..models.chat import Message
 from ..models.coupon import CouponRedemption
@@ -41,6 +41,9 @@ router = APIRouter(prefix="/api", tags=["auth"])
 
 @router.post("/auth/register", response_model=AuthResponse)
 async def register(data: RegisterReq, db_sess: AsyncSession = Depends(get_db)):
+    pw_error = validate_password(data.password)
+    if pw_error:
+        raise HTTPException(status_code=400, detail=pw_error)
     email = data.email.lower()
     res = await db_sess.execute(select(User).where(User.email == email))
     if res.scalar_one_or_none():
@@ -220,6 +223,9 @@ async def reset(data: ResetReq, db_sess: AsyncSession = Depends(get_db)):
     now = datetime.now(timezone.utc)
     if not record or record.used:
         raise HTTPException(status_code=400, detail="Invalid or already-used reset token")
+    pw_error = validate_password(data.password)
+    if pw_error:
+        raise HTTPException(status_code=400, detail=pw_error)
     expires = record.expires_at.replace(tzinfo=timezone.utc) if record.expires_at.tzinfo is None else record.expires_at
     if expires < now:
         raise HTTPException(status_code=400, detail="Reset token has expired")

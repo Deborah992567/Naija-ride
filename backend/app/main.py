@@ -10,9 +10,10 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from sqlalchemy import func, select
 from starlette.middleware.cors import CORSMiddleware
+from starlette.middleware.gzip import GZipMiddleware
 from starlette.staticfiles import StaticFiles
 
-from .config import ROOT_DIR
+from .config import ALLOWED_ORIGINS, ROOT_DIR
 from .core.logging import LatencyMiddleware, configure_logging, log_event
 from .db import AsyncSessionLocal, Base, engine
 from .models import PricingRule, User, ZoneRule
@@ -179,7 +180,6 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Naija Ride API", version="1.0.0", lifespan=lifespan)
-
 app.include_router(auth.router)
 app.include_router(drivers.router)
 app.include_router(zones.router)
@@ -206,15 +206,19 @@ uploads_dir = ROOT_DIR / "uploads"
 uploads_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=uploads_dir), name="uploads")
 
+# Middleware order: last-added runs first (outermost).
+# Outermost: latency/access logs, rate limiting, request timeout.
+app.add_middleware(LatencyMiddleware)
+# Compress JSON/text responses over the wire.
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+# CORS restricted to the configured origins (see ALLOWED_ORIGINS env).
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-# First to run: measures latency, emits access logs, records metrics.
-app.add_middleware(LatencyMiddleware)
 
 
 @app.get("/")

@@ -30,6 +30,44 @@ CACHE_TTL_PLACES = int(os.environ.get("CACHE_TTL_PLACES", 600))
 # by admins. Disabled by default for production safety.
 MONITORING_EXPOSE_LOGS = os.environ.get("MONITORING_EXPOSE_LOGS", "0") == "1"
 
+# --- Security ---------------------------------------------------------------
+# CORS: comma-separated allowed origins. In production, list your app domains.
+ALLOWED_ORIGINS = [
+    o.strip()
+    for o in os.environ.get(
+        "ALLOWED_ORIGINS",
+        "http://localhost:19006,http://localhost:8081,http://127.0.0.1:19006,http://localhost:3000",
+    ).split(",")
+    if o.strip()
+]
+
+# Rate limiting (requests per minute per client IP).
+RATE_LIMIT_ENABLED = os.environ.get("RATE_LIMIT_ENABLED", "1") == "1"
+RATE_LIMIT_GENERAL = int(os.environ.get("RATE_LIMIT_GENERAL", 300))
+RATE_LIMIT_AUTH = int(os.environ.get("RATE_LIMIT_AUTH", 10))
+RATE_LIMIT_PLACES = int(os.environ.get("RATE_LIMIT_PLACES", 20))
+RATE_LIMIT_WINDOW_SECONDS = int(os.environ.get("RATE_LIMIT_WINDOW_SECONDS", 60))
+# Exempt loopback traffic so local development/test suites aren't throttled.
+RATE_LIMIT_EXEMPT_LOCALHOST = os.environ.get("RATE_LIMIT_EXEMPT_LOCALHOST", "1") == "1"
+
+# Password policy.
+PASSWORD_MIN_LENGTH = int(os.environ.get("PASSWORD_MIN_LENGTH", 8))
+PASSWORD_REQUIRE_DIGIT = os.environ.get("PASSWORD_REQUIRE_DIGIT", "1") == "1"
+
+# AI assistant (optional). Leave AI_API_KEY empty to use the offline FAQ mode.
+AI_ENABLED = os.environ.get("AI_ENABLED", "1") == "1"
+AI_API_KEY = os.environ.get("AI_API_KEY", "")
+AI_BASE_URL = os.environ.get("AI_BASE_URL", "https://api.openai.com/v1")
+AI_MODEL = os.environ.get("AI_MODEL", "gpt-4o-mini")
+AI_TIMEOUT = float(os.environ.get("AI_TIMEOUT", 12))
+
+# --- Reliability ------------------------------------------------------------
+# Optional Redis for a shared cache across instances. Leave empty for in-memory.
+REDIS_URL = os.environ.get("REDIS_URL", "")
+
+# Max seconds a request may take before the timeout middleware intervenes.
+REQUEST_TIMEOUT_SECONDS = float(os.environ.get("REQUEST_TIMEOUT_SECONDS", 60))
+
 # JWT config (dev secret - rotate in prod via JWT_SECRET env var)
 JWT_SECRET = os.environ.get("JWT_SECRET", "transport-tracker-dev-secret-change-me-2026")
 JWT_ALG = "HS256"

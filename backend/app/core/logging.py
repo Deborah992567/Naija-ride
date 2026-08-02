@@ -8,6 +8,7 @@ exist under the `naija-ride` namespace:
 - `naija-ride.events` domain/business events (login, signup, ride.*, ...)
 - `naija-ride.access` one line per HTTP request with latency + status
 """
+import asyncio
 import json
 import logging
 import time
@@ -20,6 +21,7 @@ from ..config import (
     LOG_FILE_BACKUPS,
     LOG_FILE_MAX_BYTES,
     LOG_LEVEL,
+    REQUEST_TIMEOUT_SECONDS,
 )
 
 EVENT_LOGGER = "naija-ride.events"
@@ -114,6 +116,7 @@ def log_access(
     duration_ms: float,
     request_id: str,
     user_id: Optional[str] = None,
+    client_ip: Optional[str] = None,
 ) -> None:
     """Emit one structured line per HTTP request, including latency."""
     extra: dict[str, Any] = {
@@ -125,6 +128,8 @@ def log_access(
     }
     if user_id:
         extra["user_id"] = user_id
+    if client_ip:
+        extra["client_ip"] = client_ip
     logging.getLogger(ACCESS_LOGGER).info("request", extra=extra)
 
 
@@ -134,7 +139,12 @@ def new_request_id() -> str:
 
 class LatencyMiddleware:
     """Times every request, tags it with a request id, records metrics, and
-    emits an access log line (latency + status) for monitoring."""
+    emits an access log line (latency + status) for monitoring.
+
+    Also enforces, as the outermost middleware:
+    - rate limits (429 + Retry-After) per client IP,
+    - a slow-request timeout (504) so hung handlers don't hold a worker forever.
+    """
 
     def __init__(self, app):
         self.app = app
@@ -145,16 +155,30 @@ class LatencyMiddleware:
             return
 
         from .monitoring import metrics  # deferred to avoid circular import
+        from .ratelimit import client_ip_from_scope, rate_limiter  # deferred to avoid circular import
 
         start = time.perf_counter()
-        request_id = scope.get("headers", None)
         req_id = new_request_id()
-        # Inject a request id into the scope so handlers/middleware can read it.
         scope.setdefault("state", {})["request_id"] = req_id
 
         status_holder = {"status": 500}
         method = scope.get("method", "")
         path = scope.get("path", "")
+
+        # Rate limiting: reject before the app sees the request.
+        client_ip = client_ip_from_scope(scope)
+        allowed, retry_after = rate_limiter.check(client_ip, method, path)
+        if not allowed:
+            duration_ms = (time.perf_counter() - start) * 1000.0
+            metrics.record(method, path, 429, duration_ms, req_id)
+            log_access(method, path, 429, duration_ms, req_id, client_ip=client_ip)
+            await _send_json(
+                send,
+                status_code=429,
+                headers={"Retry-After": str(retry_after), "X-Request-ID": req_id},
+                body={"detail": "Too many requests. Please slow down."},
+            )
+            return
 
         async def send_wrapper(message):
             if message["type"] == "http.response.start":
@@ -162,12 +186,42 @@ class LatencyMiddleware:
             await send(message)
 
         try:
-            await self.app(scope, receive, send_wrapper)
+            await asyncio.wait_for(self.app(scope, receive, send_wrapper), timeout=REQUEST_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            status_holder["status"] = 504
+            log_event("system", "request.timeout", request_id=req_id, method=method, path=path, timeout_s=REQUEST_TIMEOUT_SECONDS)
+        except Exception:
+            logging.getLogger(APP_LOGGER).exception(
+                "unhandled request error", extra={"request_id": req_id, "method": method, "path": path}
+            )
+            status_holder["status"] = 500
+            await _send_json(
+                send,
+                status_code=500,
+                headers={"X-Request-ID": req_id},
+                body={"detail": "Internal server error"},
+            )
         finally:
             duration_ms = (time.perf_counter() - start) * 1000.0
             status = status_holder["status"]
             metrics.record(method, path, status, duration_ms, req_id)
-            log_access(method, path, status, duration_ms, req_id)
+            log_access(method, path, status, duration_ms, req_id, client_ip=client_ip)
+
+
+async def _send_json(send, status_code: int, headers: dict, body: dict) -> None:
+    """Write a minimal JSON response through the ASGI send callable."""
+    payload = json.dumps(body).encode("utf-8")
+    send_headers = [(b"content-type", b"application/json"), (b"content-length", str(len(payload)).encode())]
+    for k, v in headers.items():
+        send_headers.append((k.encode(), str(v).encode()))
+    await send(
+        {
+            "type": "http.response.start",
+            "status": status_code,
+            "headers": send_headers,
+        }
+    )
+    await send({"type": "http.response.body", "body": payload})
 
 
 def tail_log_file(lines: int = 100) -> list[str]:
