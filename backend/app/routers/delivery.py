@@ -22,7 +22,6 @@ from ..schemas.delivery import (
     DeliveryQuoteReq,
 )
 from ..services.delivery import delivery_out, load_delivery, quote_delivery_fee
-from ..services.drivers import nearest_driver_eta
 from ..services.coupons import driver_bonus, redeem, validate_rider_coupon
 from ..services.notifications import notify
 from ..services.wallet import credit, debit, driver_share

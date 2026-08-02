@@ -12,7 +12,7 @@ from ..core.geo import haversine_km
 from ..models.driver import DriverProfile
 from ..models.rides import RideRequest
 from ..models.zones import ZoneRule
-from ..schemas.rides import DriverOut, RideRequestOut
+from ..schemas.rides import DriverOut
 
 
 @dataclass

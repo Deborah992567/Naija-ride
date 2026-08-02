@@ -4,13 +4,13 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import PAYSTACK_SECRET_KEY, PLATFORM_COMMISSION_PERCENT
 from ..core.deps import current_user, require_admin
+from ..core.http import CircuitOpenError, client_request
 from ..core.logging import log_event
 from ..db import get_db
 from ..models.user import User
@@ -21,13 +21,12 @@ from ..schemas.wallet import (
     TopupOut,
     TopupReq,
     WalletDetailOut,
-    WalletOut,
     WithdrawalOut,
     WithdrawReq,
 )
 from ..services.audit import log_audit
 from ..services.notifications import notify
-from ..services.wallet import credit, debit, driver_share, txn_out, wallet_transactions
+from ..services.wallet import credit, debit, txn_out, wallet_transactions
 
 logger = logging.getLogger("naija-ride")
 router = APIRouter(prefix="/api", tags=["wallet"])
@@ -60,21 +59,21 @@ async def topup(data: TopupReq, user: User = Depends(current_user), db_sess: Asy
 
     if PAYSTACK_SECRET_KEY:
         try:
-            async with httpx.AsyncClient(timeout=15) as client:
-                resp = await client.post(
-                    "https://api.paystack.co/transaction/initialize",
-                    headers={"Authorization": f"Bearer {PAYSTACK_SECRET_KEY}"},
-                    json={
-                        "email": user.email,
-                        "amount": int(data.amount * 100),
-                        "reference": reference,
-                        "metadata": {"purpose": "wallet_topup", "payment_id": payment_id},
-                    },
-                )
-                if resp.status_code == 200:
-                    j = resp.json()
-                    authorization_url = j.get("data", {}).get("authorization_url", authorization_url)
-        except Exception as e:
+            resp = await client_request(
+                "POST",
+                "https://api.paystack.co/transaction/initialize",
+                headers={"Authorization": f"Bearer {PAYSTACK_SECRET_KEY}"},
+                json={
+                    "email": user.email,
+                    "amount": int(data.amount * 100),
+                    "reference": reference,
+                    "metadata": {"purpose": "wallet_topup", "payment_id": payment_id},
+                },
+            )
+            if resp.status_code == 200:
+                j = resp.json()
+                authorization_url = j.get("data", {}).get("authorization_url", authorization_url)
+        except (Exception, CircuitOpenError) as e:
             logger.warning("Paystack topup initialize failed: %s", e)
 
     db_sess.add(
@@ -110,17 +109,17 @@ async def verify_topup(reference: str, user: User = Depends(current_user), db_se
 
     if PAYSTACK_SECRET_KEY and reference:
         try:
-            async with httpx.AsyncClient(timeout=15) as client:
-                resp = await client.get(
-                    f"https://api.paystack.co/transaction/verify/{reference}",
-                    headers={"Authorization": f"Bearer {PAYSTACK_SECRET_KEY}"},
-                )
-                if resp.status_code == 200 and resp.json().get("data", {}).get("status") == "success":
-                    await credit(db_sess, user.user_id, txn.amount, category="topup", reference=reference, meta={"payment_id": txn.meta})
-                    txn.status = "success"
-                    await db_sess.commit()
-                    return {"ok": True, "status": "success", "balance": (await _balance(db_sess, user.user_id))}
-                return {"ok": False, "status": resp.json().get("data", {}).get("status", "pending")}
+            resp = await client_request(
+                "GET",
+                f"https://api.paystack.co/transaction/verify/{reference}",
+                headers={"Authorization": f"Bearer {PAYSTACK_SECRET_KEY}"},
+            )
+            if resp.status_code == 200 and resp.json().get("data", {}).get("status") == "success":
+                await credit(db_sess, user.user_id, txn.amount, category="topup", reference=reference, meta={"payment_id": txn.meta})
+                txn.status = "success"
+                await db_sess.commit()
+                return {"ok": True, "status": "success", "balance": (await _balance(db_sess, user.user_id))}
+            return {"ok": False, "status": resp.json().get("data", {}).get("status", "pending")}
         except Exception as e:
             logger.warning("Paystack topup verify failed: %s", e)
             return {"ok": False, "status": "unverified"}

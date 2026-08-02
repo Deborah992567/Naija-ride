@@ -3,12 +3,12 @@ import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
-import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.deps import current_user
+from ..core.http import CircuitOpenError, client_request
 from ..core.logging import log_event
 from ..core.security import hash_pw, issue_token, validate_password, verify_pw
 from ..db import get_db
@@ -16,6 +16,7 @@ from ..models.chat import Message
 from ..models.coupon import CouponRedemption
 from ..models.driver import DriverProfile
 from ..models.notification import Notification
+from ..models.rides import RideRequest
 from ..models.safety import EmergencyContact, EmergencyRecord, TripShare
 from ..models.ticket import SupportMessage, SupportTicket
 from ..models.user import DeviceToken, PasswordReset, User, UserSession
@@ -94,14 +95,15 @@ async def login(data: LoginReq, db_sess: AsyncSession = Depends(get_db)):
 @router.post("/auth/google-session", response_model=AuthResponse)
 async def google_session(data: GoogleSessionReq, db_sess: AsyncSession = Depends(get_db)):
     """Exchange Emergent session_id (from OAuth redirect) for app token & user."""
-    async with httpx.AsyncClient(timeout=15.0) as http:
-        try:
-            r = await http.get(
-                "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
-                headers={"X-Session-ID": data.session_id},
-            )
-        except httpx.HTTPError as e:
-            raise HTTPException(status_code=502, detail=f"Auth provider unreachable: {e}") from e
+    try:
+        r = await client_request(
+            "GET",
+            "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
+            headers={"X-Session-ID": data.session_id},
+            timeout=15.0,
+        )
+    except (Exception, CircuitOpenError) as e:
+        raise HTTPException(status_code=502, detail=f"Auth provider unreachable: {e}") from e
     if r.status_code != 200:
         raise HTTPException(status_code=401, detail="Invalid session_id")
     payload = r.json()
@@ -143,6 +145,43 @@ async def google_session(data: GoogleSessionReq, db_sess: AsyncSession = Depends
 @router.get("/auth/me", response_model=UserOut)
 async def me(user: User = Depends(current_user)):
     return user_to_out(user.__dict__)
+
+
+@router.get("/auth/export-data", response_model=dict)
+async def export_data(user: User = Depends(current_user), db_sess: AsyncSession = Depends(get_db)):
+    """NDPR/GDPR data portability: return every record held about the user."""
+    uid = user.user_id
+    rows = {"user": user_to_out(user.__dict__).model_dump(mode="json")}
+
+    for key, model, filter_ in (
+        ("sessions", UserSession, UserSession.user_id == uid),
+        ("device_tokens", DeviceToken, DeviceToken.user_id == uid),
+        ("notifications", Notification, Notification.user_id == uid),
+        ("wallets", Wallet, Wallet.user_id == uid),
+        ("wallet_transactions", WalletTransaction, WalletTransaction.user_id == uid),
+        ("withdrawals", WithdrawalRequest, WithdrawalRequest.user_id == uid),
+        ("driver_profiles", DriverProfile, DriverProfile.user_id == uid),
+        ("support_tickets", SupportTicket, SupportTicket.user_id == uid),
+        ("coupon_redemptions", CouponRedemption, CouponRedemption.user_id == uid),
+    ):
+        res = await db_sess.execute(select(model).where(filter_))
+        rows[key] = [_ser_row(obj) for obj in res.scalars().all()]
+
+    rides = await db_sess.execute(
+        select(RideRequest).where((RideRequest.rider_id == uid) | (RideRequest.driver_id == uid))
+    )
+    rows["rides"] = [_ser_row(r) for r in rides.scalars().all()]
+
+    log_event("auth", "user.data_exported", user_id=uid)
+    return rows
+
+
+def _ser_row(obj) -> dict:
+    d = {c: getattr(obj, c) for c in obj.__dict__ if not c.startswith("_")}
+    for k, v in d.items():
+        if hasattr(v, "isoformat"):
+            d[k] = v.isoformat()
+    return d
 
 
 @router.post("/auth/logout")

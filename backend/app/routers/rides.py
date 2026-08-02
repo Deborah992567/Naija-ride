@@ -128,18 +128,19 @@ async def list_rides(role: str = "customer", user: User = Depends(current_user),
     res = await db_sess.execute(q)
     rides = list(res.scalars().all())
 
-    out = []
-    for ride in rides:
-        driver = None
-        driver_name = None
-        if ride.driver_id:
-            dres = await db_sess.execute(select(DriverProfile).where(DriverProfile.user_id == ride.driver_id))
-            driver = dres.scalar_one_or_none()
-            ures = await db_sess.execute(select(User).where(User.user_id == ride.driver_id))
-            du = ures.scalar_one_or_none()
-            driver_name = du.name if du else None
-        out.append(ride_out(ride, driver, driver_name))
-    return out
+    # Batch-load driver profiles + user names to avoid an N+1 query per ride.
+    driver_ids = {r.driver_id for r in rides if r.driver_id}
+    drivers: dict[str, DriverProfile] = {}
+    driver_names: dict[str, str] = {}
+    if driver_ids:
+        dres = await db_sess.execute(select(DriverProfile).where(DriverProfile.user_id.in_(driver_ids)))
+        for d in dres.scalars().all():
+            drivers[d.user_id] = d
+        ures = await db_sess.execute(select(User).where(User.user_id.in_(driver_ids)))
+        for u in ures.scalars().all():
+            driver_names[u.user_id] = u.name
+
+    return [ride_out(ride, drivers.get(ride.driver_id), driver_names.get(ride.driver_id)) for ride in rides]
 
 
 @router.get("/rides/{ride_id}", response_model=RideRequestOut)

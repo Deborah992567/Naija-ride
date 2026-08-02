@@ -1,15 +1,14 @@
 """Payments: card (Paystack), transfer details, verification."""
 import logging
-import os
 import uuid
 
-import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import PAYSTACK_SECRET_KEY
 from ..core.deps import current_user
+from ..core.http import CircuitOpenError, client_request
 from ..core.logging import log_event
 from ..db import get_db
 from ..models.payments import PaymentRecord
@@ -33,21 +32,21 @@ async def initiate_card_payment(data: CardPayReq, user: User = Depends(current_u
 
     if PAYSTACK_SECRET_KEY:
         try:
-            async with httpx.AsyncClient(timeout=15) as client:
-                resp = await client.post(
-                    "https://api.paystack.co/transaction/initialize",
-                    headers={"Authorization": f"Bearer {PAYSTACK_SECRET_KEY}"},
-                    json={
-                        "email": user.email,
-                        "amount": int(data.amount * 100),
-                        "reference": reference,
-                        "metadata": {"ride_id": data.ride_id, "payment_id": payment_id},
-                    },
-                )
-                if resp.status_code == 200:
-                    j = resp.json()
-                    authorization_url = j.get("data", {}).get("authorization_url", authorization_url)
-        except Exception as e:
+            resp = await client_request(
+                "POST",
+                "https://api.paystack.co/transaction/initialize",
+                headers={"Authorization": f"Bearer {PAYSTACK_SECRET_KEY}"},
+                json={
+                    "email": user.email,
+                    "amount": int(data.amount * 100),
+                    "reference": reference,
+                    "metadata": {"ride_id": data.ride_id, "payment_id": payment_id},
+                },
+            )
+            if resp.status_code == 200:
+                j = resp.json()
+                authorization_url = j.get("data", {}).get("authorization_url", authorization_url)
+        except (Exception, CircuitOpenError) as e:
             logger.warning("Paystack initialize failed: %s", e)
 
     payment = PaymentRecord(
@@ -78,17 +77,17 @@ async def verify_card_payment(payment_id: str, user: User = Depends(current_user
 
     if PAYSTACK_SECRET_KEY and payment.provider_ref:
         try:
-            async with httpx.AsyncClient(timeout=15) as client:
-                resp = await client.get(
-                    f"https://api.paystack.co/transaction/verify/{payment.provider_ref}",
-                    headers={"Authorization": f"Bearer {PAYSTACK_SECRET_KEY}"},
-                )
-                if resp.status_code == 200 and resp.json().get("data", {}).get("status") == "success":
-                    payment.status = "success"
-                    await db_sess.commit()
-                    log_event("payments", "payment.card_verified", user_id=user.user_id, payment_id=payment_id, status="success", provider="paystack")
-                    return {"ok": True, "status": "success"}
-                return {"ok": False, "status": resp.json().get("data", {}).get("status", "pending")}
+            resp = await client_request(
+                "GET",
+                f"https://api.paystack.co/transaction/verify/{payment.provider_ref}",
+                headers={"Authorization": f"Bearer {PAYSTACK_SECRET_KEY}"},
+            )
+            if resp.status_code == 200 and resp.json().get("data", {}).get("status") == "success":
+                payment.status = "success"
+                await db_sess.commit()
+                log_event("payments", "payment.card_verified", user_id=user.user_id, payment_id=payment_id, status="success", provider="paystack")
+                return {"ok": True, "status": "success"}
+            return {"ok": False, "status": resp.json().get("data", {}).get("status", "pending")}
         except Exception as e:
             logger.warning("Paystack verify failed: %s", e)
             return {"ok": False, "status": "unverified"}

@@ -14,7 +14,7 @@ from starlette.middleware.gzip import GZipMiddleware
 from starlette.staticfiles import StaticFiles
 
 from .config import ALLOWED_ORIGINS, ROOT_DIR
-from .core.logging import LatencyMiddleware, configure_logging, log_event
+from .core.logging import LatencyMiddleware, configure_logging
 from .db import AsyncSessionLocal, Base, engine
 from .models import PricingRule, User, ZoneRule
 from .routers import (
@@ -125,6 +125,10 @@ async def lifespan(app: FastAPI):
             "DROP TABLE IF EXISTS reports",
             "DROP TABLE IF EXISTS route_follows",
             "DROP TABLE IF EXISTS routes",
+            # Hot-query indexes (composites + status not covered by single-column model indexes).
+            "CREATE INDEX IF NOT EXISTS idx_rides_status ON ride_requests (status)",
+            "CREATE INDEX IF NOT EXISTS idx_wallet_txn_user ON wallet_transactions (user_id, created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_wallet_txn_category ON wallet_transactions (user_id, category, status)",
         ]:
             await conn.exec_driver_sql(stmt)
 

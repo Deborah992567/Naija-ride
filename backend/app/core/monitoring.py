@@ -7,7 +7,6 @@ Resets on process restart (use an external collector for durable storage).
 import threading
 import time
 from collections import defaultdict, deque
-from typing import Optional
 
 # Latency histogram buckets (ms). A request lands in the first bucket >= its
 # duration, plus a catch-all "inf" bucket.

@@ -30,6 +30,10 @@ jobs:
           cache-dependency-path: backend/requirements.txt
       - name: Install dependencies
         run: pip install -r backend/requirements.txt
+      - name: Lint (ruff)
+        run: |
+          pip install ruff
+          ruff check backend/app
       - name: Run tests
         env:
           EXPO_PUBLIC_BACKEND_URL: http://localhost:8001

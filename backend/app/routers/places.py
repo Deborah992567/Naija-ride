@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from ..config import CACHE_TTL_PLACES
 from ..core.cache import cache
+from ..core.http import CircuitOpenError, client_request
 
 router = APIRouter(prefix="/api", tags=["places"])
 
@@ -50,11 +51,11 @@ async def search_places(
         "accept-language": "en",
     }
     try:
-        async with httpx.AsyncClient(headers=HEADERS, timeout=TIMEOUT) as client:
-            r = await client.get(f"{NOMINATIM}/search", params=params)
-            r.raise_for_status()
-            data = r.json()
-    except (httpx.HTTPError, ValueError) as e:
+        resp = await client_request(
+            "GET", f"{NOMINATIM}/search", headers=HEADERS, timeout=TIMEOUT, params=params
+        )
+        data = resp.json()
+    except (httpx.HTTPError, ValueError, CircuitOpenError, RuntimeError) as e:
         raise HTTPException(status_code=502, detail=f"Places search unavailable: {e}") from e
     results = [_place_from_json(item) for item in data if item.get("lat") and item.get("lon")]
     # Cache only successful lookups so transient upstream failures don't go stale.
@@ -80,11 +81,11 @@ async def reverse_geocode(
     if cached is not None:
         return cached
     try:
-        async with httpx.AsyncClient(headers=HEADERS, timeout=TIMEOUT) as client:
-            r = await client.get(f"{NOMINATIM}/reverse", params=params)
-            r.raise_for_status()
-            item = r.json()
-    except (httpx.HTTPError, ValueError) as e:
+        resp = await client_request(
+            "GET", f"{NOMINATIM}/reverse", headers=HEADERS, timeout=TIMEOUT, params=params
+        )
+        item = resp.json()
+    except (httpx.HTTPError, ValueError, CircuitOpenError, RuntimeError) as e:
         raise HTTPException(status_code=502, detail=f"Reverse geocoding unavailable: {e}") from e
     if not item or item.get("error"):
         raise HTTPException(status_code=404, detail="No place found for these coordinates")
