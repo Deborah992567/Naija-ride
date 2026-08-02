@@ -34,6 +34,20 @@ A full-stack, crowdsourced ride-hailing and transport platform built for Nigeria
 - **Multi-city**: Seeded for Lagos, Abuja, and Port Harcourt.
 - **Hybrid auth**: Email/password (JWT) with Google OAuth via Emergent session integration.
 
+### Observability, Caching & Scalability
+- **Structured JSON logs**: One rotating log file (`backend/logs/app.log`) with
+  request latency, status, request IDs, and per-domain business events —
+  every signup, login, ride, delivery, moving job, payment, and wallet movement.
+- **Latency tracking**: Every HTTP request is timed and recorded (avg latency,
+  per-route counters, and a latency histogram) via the monitoring endpoint.
+- **Monitoring API**: `GET /api/monitoring/metrics`, `/api/monitoring/cache`,
+  and (admins only) `/api/monitoring/logs`.
+- **Caching**: In-memory TTL cache for hot data — zone rules, fare rules, and
+  Nominatim place lookups — slashing DB hits and upstream API calls.
+- **Scalability**: Configurable DB connection pooling (`pool_size`,
+  `max_overflow`, `pool_recycle`, `pool_pre_ping`) so the API handles
+  concurrent riders/drivers without re-opening connections.
+
 ## 🛠 Tech Stack
 
 ### Backend
@@ -114,6 +128,44 @@ cd backend
 pytest -v
 ```
 
+## 📊 Monitoring & Logs
+
+The backend exposes three monitoring endpoints (add an admin Bearer token for `/logs`):
+
+| Endpoint | Description |
+| --- | --- |
+| `GET /api/monitoring/metrics` | Request counters, avg latency, latency histogram, slowest requests, error rate |
+| `GET /api/monitoring/cache` | Cache hit/miss rate and current size |
+| `GET /api/monitoring/logs` | Tail of the structured app log (requires `MONITORING_EXPOSE_LOGS=1` + admin token) |
+
+Every request writes a structured JSON access log, and every domain action emits
+a business event. Example:
+
+```json
+{"ts":"2026-08-02T19:41:22.798","level":"INFO","logger":"naija-ride.events",
+ "msg":"auth.user.signup","scope":"auth","event":"user.signup","user_id":"user_6da14a68d949"}
+{"ts":"2026-08-02T19:41:23.191","level":"INFO","logger":"naija-ride.access",
+ "msg":"request","request_id":"09920c744ef146eb","duration_ms":378.454,
+ "method":"POST","path":"/api/auth/login","status_code":200}
+```
+
+Business events cover `auth` (signup, login, login_failed, logout, google_login,
+password_reset, account_deleted), `rides` (estimate, requested, accepted,
+cancelled, started, completed, rated), `drivers` (registered, online, offline),
+`delivery`, `moving`, `wallet` (credit, debit, topup, withdrawal), `payments`,
+and `referrals`.
+
+### Scaling for production
+
+- **More workers**: run multiple Uvicorn workers behind a load balancer:
+  `uvicorn app.main:app --workers 4` (each worker gets its own in-memory cache).
+- **Connection pool**: tune `DB_POOL_SIZE` / `DB_MAX_OVERFLOW` to your DB's
+  connection limit.
+- **Shared cache**: the in-process cache is per instance — for multi-instance
+  deployments, back `core/cache.py` with Redis (the `get/set/delete/clear` API
+  is designed to be swapped without touching call sites).
+- **Log shipping**: stream `backend/logs/app.log` to Datadog/Loki/CloudWatch.
+
 ## 📄 API Documentation
 
 Once the backend is running, the interactive Swagger UI is available at:
@@ -124,11 +176,13 @@ Once the backend is running, the interactive Swagger UI is available at:
 ```
 ├── backend/            # FastAPI application
 │   ├── app/
+│   │   ├── core/       # deps, security, geo, realtime, logging, cache, monitoring
 │   │   ├── models/     # SQLAlchemy models
-│   │   ├── routers/    # API route modules
+│   │   ├── routers/    # API route modules (incl. monitoring)
 │   │   ├── schemas/    # Pydantic schemas
 │   │   ├── services/   # Business logic
 │   │   └── main.py     # App entrypoint
+│   ├── logs/           # Structured JSON logs (rotating)
 │   └── tests/          # pytest suite
 ├── frontend/           # Expo (React Native) app
 │   ├── app/            # Expo Router screens
