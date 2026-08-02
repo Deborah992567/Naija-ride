@@ -19,6 +19,7 @@ from .db import AsyncSessionLocal, Base, engine
 from .models import PricingRule, User, ZoneRule
 from .routers import (
     admin,
+    assistant,
     auth,
     chat,
     coupons,
@@ -205,6 +206,7 @@ app.include_router(admin.router)
 app.include_router(upload.router)
 app.include_router(health.router)
 app.include_router(monitoring.router)
+app.include_router(assistant.router)
 
 uploads_dir = ROOT_DIR / "uploads"
 uploads_dir.mkdir(parents=True, exist_ok=True)
