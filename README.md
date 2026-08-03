@@ -35,6 +35,7 @@ A full-stack, crowdsourced ride-hailing and transport platform built for Nigeria
 - **Hybrid auth**: Email/password (JWT) with Google OAuth via Emergent session integration.
 - **AI assistant**: `POST /api/assistant/message` answers support questions via an
   OpenAI-compatible API, with an offline FAQ fallback when `AI_API_KEY` is unset.
+  A dedicated in-app chat screen (`/assistant`) is wired into Profile → AI assistant.
 - **Data portability**: `GET /api/auth/export-data` returns every record held about a
   user (NDPR/GDPR compliant export).
 
@@ -46,6 +47,10 @@ A full-stack, crowdsourced ride-hailing and transport platform built for Nigeria
 - **Upload validation**: Magic-byte sniffing rejects disguised executables.
 - **Request timeouts**: Every request is bounded — slow handlers return `504` instead
   of wedging a worker.
+- **Security headers**: Every response carries CSP, `X-Content-Type-Options: nosniff`,
+  `X-Frame-Options: DENY`, and a `Referrer-Policy`.
+- **Request IDs**: Every response returns an `X-Request-ID` that matches the access log
+  line, so you can trace one request from edge to log.
 
 ### Reliability
 - **Retry with backoff + circuit breaker**: Outbound calls (Paystack, Nominatim,
@@ -73,10 +78,16 @@ A full-stack, crowdsourced ride-hailing and transport platform built for Nigeria
 - **Monitoring API**: `GET /api/monitoring/metrics`, `/api/monitoring/cache`,
   and (admins only) `/api/monitoring/logs`.
 - **Caching**: In-memory TTL cache for hot data — zone rules, fare rules, and
-  Nominatim place lookups — slashing DB hits and upstream API calls.
+  Nominatim place lookups — slashing DB hits and upstream API calls. When
+  `REDIS_URL` is set, place lookups are also cached in a shared Redis L2 so
+  multiple instances serve the same entries (`/api/monitoring/cache` reports
+  the active engine).
+- **Prometheus**: `GET /api/monitoring/prometheus` exposes metrics in text format
+  for Grafana/Prometheus scraping.
 - **Scalability**: Configurable DB connection pooling (`pool_size`,
   `max_overflow`, `pool_recycle`, `pool_pre_ping`) so the API handles
-  concurrent riders/drivers without re-opening connections.
+  concurrent riders/drivers without re-opening connections. A startup log line
+  summarizes the active runtime config (pool, limits, cache TTLs, Redis, AI).
 
 ### Developer Tooling & CI
 - **Linting**: `ruff` configured in `backend/pyproject.toml` (pyflakes rules),
@@ -173,7 +184,8 @@ The backend exposes three monitoring endpoints (add an admin Bearer token for `/
 | Endpoint | Description |
 | --- | --- |
 | `GET /api/monitoring/metrics` | Request counters, avg latency, latency histogram, slowest requests, error rate |
-| `GET /api/monitoring/cache` | Cache hit/miss rate and current size |
+| `GET /api/monitoring/prometheus` | Same data in Prometheus text format for Grafana/Prometheus scraping |
+| `GET /api/monitoring/cache` | Cache hit/miss rate, current size, and active engine (memory vs Redis) |
 | `GET /api/monitoring/logs` | Tail of the structured app log (requires `MONITORING_EXPOSE_LOGS=1` + admin token) |
 
 Every request writes a structured JSON access log, and every domain action emits
@@ -200,8 +212,8 @@ and `referrals`.
 - **Connection pool**: tune `DB_POOL_SIZE` / `DB_MAX_OVERFLOW` to your DB's
   connection limit.
 - **Shared cache**: the in-process cache is per instance — for multi-instance
-  deployments, back `core/cache.py` with Redis (the `get/set/delete/clear` API
-  is designed to be swapped without touching call sites).
+  deployments set `REDIS_URL`; place lookups then share a Redis L2 across
+  instances (the in-memory layer stays as the fast path).
 - **Log shipping**: stream `backend/logs/app.log` to Datadog/Loki/CloudWatch.
 
 ### Reliability operations
