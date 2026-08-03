@@ -2,7 +2,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ..config import MONITORING_EXPOSE_LOGS
-from ..core.cache import cache
+from ..core.cache import cache, redis_cache
 from ..core.deps import require_admin
 from ..core.logging import tail_log_file
 from ..core.monitoring import metrics
@@ -28,7 +28,8 @@ async def get_prometheus():
 async def get_cache_stats():
     """Cache size, hit/miss counters, and current keys."""
     return {
-        "engine": "in-memory-ttl",
+        "engine": "redis-json" if redis_cache.enabled else "in-memory-ttl",
+        "redis_url": redis_cache.redis_url if redis_cache.enabled else None,
         **cache.stats(),
     }
 

@@ -8,7 +8,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query
 
 from ..config import CACHE_TTL_PLACES
-from ..core.cache import cache
+from ..core.cache import get_cached, set_cached
 from ..core.http import CircuitOpenError, client_request
 
 router = APIRouter(prefix="/api", tags=["places"])
@@ -39,7 +39,7 @@ async def search_places(
     if not query:
         return []
     cache_key = f"places:search:{query.lower()}:{limit}"
-    cached = cache.get(cache_key)
+    cached = await get_cached(cache_key)
     if cached is not None:
         return cached
     params = {
@@ -59,7 +59,7 @@ async def search_places(
         raise HTTPException(status_code=502, detail=f"Places search unavailable: {e}") from e
     results = [_place_from_json(item) for item in data if item.get("lat") and item.get("lon")]
     # Cache only successful lookups so transient upstream failures don't go stale.
-    cache.set(cache_key, results, ttl=CACHE_TTL_PLACES)
+    await set_cached(cache_key, results, ttl=CACHE_TTL_PLACES)
     return results
 
 
@@ -77,7 +77,7 @@ async def reverse_geocode(
         "zoom": 17,
     }
     cache_key = f"places:reverse:{round(lat, 5)}:{round(lng, 5)}"
-    cached = cache.get(cache_key)
+    cached = await get_cached(cache_key)
     if cached is not None:
         return cached
     try:
@@ -90,5 +90,5 @@ async def reverse_geocode(
     if not item or item.get("error"):
         raise HTTPException(status_code=404, detail="No place found for these coordinates")
     result = _place_from_json(item)
-    cache.set(cache_key, result, ttl=CACHE_TTL_PLACES)
+    await set_cached(cache_key, result, ttl=CACHE_TTL_PLACES)
     return result
