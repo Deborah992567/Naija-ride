@@ -15,6 +15,7 @@ from starlette.staticfiles import StaticFiles
 
 from .config import ALLOWED_ORIGINS, ROOT_DIR
 from .core.logging import LatencyMiddleware, configure_logging
+from .core.security import SecurityHeadersMiddleware
 from .db import AsyncSessionLocal, Base, engine
 from .models import PricingRule, User, ZoneRule
 from .routers import (
@@ -215,6 +216,8 @@ app.mount("/uploads", StaticFiles(directory=uploads_dir), name="uploads")
 # Middleware order: last-added runs first (outermost).
 # Outermost: latency/access logs, rate limiting, request timeout.
 app.add_middleware(LatencyMiddleware)
+# Security headers (CSP, nosniff, frame denial) on every response.
+app.add_middleware(SecurityHeadersMiddleware)
 # Compress JSON/text responses over the wire.
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 # CORS restricted to the configured origins (see ALLOWED_ORIGINS env).

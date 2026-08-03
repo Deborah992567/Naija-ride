@@ -1,4 +1,4 @@
-"""Password hashing + JWT issuance/decoding."""
+"""Password hashing + JWT issuance/decoding + security response headers."""
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -46,3 +46,36 @@ def decode_token(token: str) -> Optional[str]:
         return payload.get("sub")
     except jwt.InvalidTokenError:
         return None
+
+
+# Headers applied to every HTTP response unless the route already set them.
+SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "Permissions-Policy": "geolocation=(self), camera=(self), microphone=()",
+    "Content-Security-Policy": "default-src 'self'; frame-ancestors 'none'; base-uri 'self'",
+}
+
+
+class SecurityHeadersMiddleware:
+    """Pure-ASGI middleware injecting security headers on every response."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers", []))
+                existing = {name.lower() for name, _ in headers}
+                for name, value in SECURITY_HEADERS.items():
+                    if name.lower() not in existing:
+                        headers.append((name.lower().encode(), value.encode()))
+                message["headers"] = headers
+            await send(message)
+
+        return await self.app(scope, receive, send_wrapper)
