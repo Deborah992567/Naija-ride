@@ -181,6 +181,36 @@ async def lifespan(app: FastAPI):
             await session.commit()
             logger.info("Backfilled referral codes for %d users", len(missing_ids))
 
+    # Ops banner: summarize runtime configuration once at startup.
+    from .config import (
+        AI_ENABLED,
+        CACHE_TTL_PLACES,
+        CACHE_TTL_PRICING,
+        CACHE_TTL_ZONES,
+        DB_MAX_OVERFLOW,
+        DB_POOL_SIZE,
+        RATE_LIMIT_AUTH,
+        RATE_LIMIT_GENERAL,
+        RATE_LIMIT_WINDOW_SECONDS,
+        REQUEST_TIMEOUT_SECONDS,
+    )
+    from .core.cache import redis_cache
+
+    logger.info(
+        "startup: pool_size=%s pool_overflow=%s rate_limit=%s/%s auth_limit=%s timeout=%ss cache_ttl=[zones=%s pricing=%s places=%s] redis=%s ai=%s",
+        DB_POOL_SIZE,
+        DB_MAX_OVERFLOW,
+        RATE_LIMIT_GENERAL,
+        RATE_LIMIT_WINDOW_SECONDS,
+        RATE_LIMIT_AUTH,
+        REQUEST_TIMEOUT_SECONDS,
+        CACHE_TTL_ZONES,
+        CACHE_TTL_PRICING,
+        CACHE_TTL_PLACES,
+        "on" if redis_cache.enabled else "off",
+        "on" if AI_ENABLED else "off",
+    )
+
     yield
     await engine.dispose()
 
