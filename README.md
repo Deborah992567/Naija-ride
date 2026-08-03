@@ -33,6 +33,36 @@ A full-stack, crowdsourced ride-hailing and transport platform built for Nigeria
 - **Admin panel**: Manage pricing rules, zones, users, and platform operations.
 - **Multi-city**: Seeded for Lagos, Abuja, and Port Harcourt.
 - **Hybrid auth**: Email/password (JWT) with Google OAuth via Emergent session integration.
+- **AI assistant**: `POST /api/assistant/message` answers support questions via an
+  OpenAI-compatible API, with an offline FAQ fallback when `AI_API_KEY` is unset.
+- **Data portability**: `GET /api/auth/export-data` returns every record held about a
+  user (NDPR/GDPR compliant export).
+
+### Security
+- **Rate limiting**: Per-IP sliding window on all endpoints, stricter on auth
+  (login/register) and places; returns `429` + `Retry-After`.
+- **CORS**: Restricted to a configurable `ALLOWED_ORIGINS` allow-list.
+- **Password policy**: Minimum length + required digit enforced at signup/reset.
+- **Upload validation**: Magic-byte sniffing rejects disguised executables.
+- **Request timeouts**: Every request is bounded — slow handlers return `504` instead
+  of wedging a worker.
+
+### Reliability
+- **Retry with backoff + circuit breaker**: Outbound calls (Paystack, Nominatim,
+  Emergent, AI) retry transient failures with exponential backoff; a per-host circuit
+  breaker trips open after repeated failures so an upstream outage can't take the API down.
+- **Health checks**: `GET /api/health/live` (liveness) and `/api/health/ready`
+  (DB readiness probe) for orchestrators and load balancers.
+- **DB indexes**: Composite/hot-path indexes applied at startup for rides, wallet
+  transactions, delivery, and moving lookups.
+- **Automated backups**: `scripts/backup_db.sh` dumps MariaDB daily (cron) with
+  retention pruning.
+
+### Performance
+- **GZip compression**: Enabled via middleware for JSON payloads.
+- **N+1 elimination**: Ride-list endpoint batch-loads driver profiles/names in 2
+  queries instead of 1 per ride.
+- **Caching**: See below — plus a dedicated cache stats endpoint.
 
 ### Observability, Caching & Scalability
 - **Structured JSON logs**: One rotating log file (`backend/logs/app.log`) with
@@ -47,6 +77,14 @@ A full-stack, crowdsourced ride-hailing and transport platform built for Nigeria
 - **Scalability**: Configurable DB connection pooling (`pool_size`,
   `max_overflow`, `pool_recycle`, `pool_pre_ping`) so the API handles
   concurrent riders/drivers without re-opening connections.
+
+### Developer Tooling & CI
+- **Linting**: `ruff` configured in `backend/pyproject.toml` (pyflakes rules),
+  run in CI and via `ruff check backend/app`.
+- **Load testing**: Locust scenarios in `backend/load_testing/locustfile.py`
+  (rider + driver flows).
+- **Dependabot**: Weekly dependency update PRs for pip, npm, and GitHub Actions.
+- **CI**: GitHub Actions runs ruff + the pytest suite on every push.
 
 ## 🛠 Tech Stack
 
@@ -166,6 +204,41 @@ and `referrals`.
   is designed to be swapped without touching call sites).
 - **Log shipping**: stream `backend/logs/app.log` to Datadog/Loki/CloudWatch.
 
+### Reliability operations
+
+- **Health checks**: point your load balancer at `/api/health/ready` (DB-backed)
+  and `/api/health/live` for process liveness.
+- **Backups**: run `scripts/backup_db.sh` on a schedule:
+  ```bash
+  cd backend
+  ./scripts/backup_db.sh            # dumps to backend/backups/, prunes after 14 days
+  ```
+- **Outbound resilience**: circuit breakers trip per upstream host; failures and
+  re-trips are logged via `core/http.py`.
+
+### AI assistant
+
+`POST /api/assistant/message` with a Bearer token and `{"message": "..."}`. When
+`AI_API_KEY` is set it calls `AI_BASE_URL/chat/completions` (any OpenAI-compatible
+endpoint). With no key it falls back to an offline FAQ matcher that answers from
+live user data (wallet balance, recent ride status, driving, pricing, promos).
+
+### Load testing
+
+```bash
+cd backend
+pip install -r requirements-dev.txt
+locust -f load_testing/locustfile.py --host http://localhost:8001
+```
+
+### Linting
+
+```bash
+cd backend
+pip install -r requirements-dev.txt
+ruff check app/
+```
+
 ## 📄 API Documentation
 
 Once the backend is running, the interactive Swagger UI is available at:
@@ -176,18 +249,21 @@ Once the backend is running, the interactive Swagger UI is available at:
 ```
 ├── backend/            # FastAPI application
 │   ├── app/
-│   │   ├── core/       # deps, security, geo, realtime, logging, cache, monitoring
+│   │   ├── core/       # deps, security, geo, http (retry/circuit), realtime, logging, cache, monitoring
 │   │   ├── models/     # SQLAlchemy models
-│   │   ├── routers/    # API route modules (incl. monitoring)
+│   │   ├── routers/    # API route modules (incl. monitoring, health, assistant)
 │   │   ├── schemas/    # Pydantic schemas
-│   │   ├── services/   # Business logic
+│   │   ├── services/   # Business logic (incl. assistant)
 │   │   └── main.py     # App entrypoint
+│   ├── scripts/        # backup_db.sh (MariaDB backups)
+│   ├── load_testing/   # Locust scenarios
 │   ├── logs/           # Structured JSON logs (rotating)
 │   └── tests/          # pytest suite
 ├── frontend/           # Expo (React Native) app
 │   ├── app/            # Expo Router screens
 │   ├── src/            # Components, hooks, lib, utils
 │   └── package.json
+├── .github/            # CI workflow + Dependabot config
 └── docker-compose.yml  # MariaDB + backend orchestration
 ```
 
