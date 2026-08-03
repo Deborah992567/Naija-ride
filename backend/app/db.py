@@ -16,15 +16,16 @@ class Base(DeclarativeBase):
 
 
 # Pool sizing lets the app serve concurrent riders/drivers without opening a
-# new connection per request; pool_pre_ping drops stale connections, and
-# pool_recycle rotates them so long-lived proxies don't kill the connection.
+# new connection per request; pool_recycle rotates them so long-lived proxies
+# don't kill the connection. pool_pre_ping is intentionally OFF: the asyncmy
+# adapter's ping() signature breaks SQLAlchemy's do_ping (the /api/health/ready
+# probe covers liveness instead).
 engine = create_async_engine(
     DB_URL,
     echo=DB_ECHO,
     pool_size=DB_POOL_SIZE,
     max_overflow=DB_MAX_OVERFLOW,
     pool_recycle=DB_POOL_RECYCLE,
-    pool_pre_ping=True,
 )
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
