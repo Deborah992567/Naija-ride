@@ -16,6 +16,14 @@ async def get_metrics():
     return metrics.snapshot()
 
 
+@router.get("/prometheus")
+async def get_prometheus():
+    """Metrics in Prometheus text format for external scraping (e.g. Grafana)."""
+    from fastapi.responses import PlainTextResponse
+
+    return PlainTextResponse(metrics.prometheus(), media_type="text/plain; version=0.0.4")
+
+
 @router.get("/cache")
 async def get_cache_stats():
     """Cache size, hit/miss counters, and current keys."""

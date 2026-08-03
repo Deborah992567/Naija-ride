@@ -74,5 +74,25 @@ class MetricsStore:
                 "routes": routes[:200],
             }
 
+    def prometheus(self) -> str:
+        """Render metrics in Prometheus text exposition format for scraping."""
+        with self._lock:
+            lines = ["# HELP naija_ride_requests_total Total HTTP requests handled",
+                     "# TYPE naija_ride_requests_total counter",
+                     f'naija_ride_requests_total{{}} {self.total_requests}',
+                     "# HELP naija_ride_requests_total_per_status Requests by HTTP status",
+                     "# TYPE naija_ride_requests_total_per_status counter",
+                     "# HELP naija_ride_request_latency_seconds_bucket Request latency histogram (seconds)",
+                     "# TYPE naija_ride_request_latency_seconds_bucket histogram"]
+            for status, count in sorted(self.status_counts.items()):
+                lines.append(f'naija_ride_requests_total{{status="{status}"}} {count}')
+            for bucket, count in sorted(self.latency_buckets.items()):
+                value = "1e6" if bucket == "inf" else str(float(bucket) / 1000.0)
+                lines.append(f'naija_ride_request_latency_seconds_bucket{{le="{value}"}} {count}')
+            lines.append("# HELP naija_ride_uptime_seconds Process uptime")
+            lines.append("# TYPE naija_ride_uptime_seconds gauge")
+            lines.append(f"naija_ride_uptime_seconds {time.time() - self.started_at}")
+            return "\n".join(lines) + "\n"
+
 
 metrics = MetricsStore()
