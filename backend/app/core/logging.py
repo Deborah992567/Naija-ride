@@ -183,6 +183,9 @@ class LatencyMiddleware:
         async def send_wrapper(message):
             if message["type"] == "http.response.start":
                 status_holder["status"] = message["status"]
+                headers = list(message.get("headers", []))
+                headers.append((b"x-request-id", req_id.encode()))
+                message["headers"] = headers
             await send(message)
 
         try:
