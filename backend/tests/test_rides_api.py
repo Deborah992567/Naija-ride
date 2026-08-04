@@ -6,6 +6,8 @@ import uuid
 import pytest
 import requests
 
+from conftest import register, make_verified_online_driver
+
 BASE_URL = os.environ.get("EXPO_PUBLIC_BACKEND_URL", "http://localhost:8001").rstrip("/")
 API = f"{BASE_URL}/api"
 
@@ -38,28 +40,10 @@ def rider(session, state):
 
 @pytest.fixture(scope="session")
 def driver(session, state):
-    rid = uuid.uuid4().hex[:8]
-    data = {"email": f"DRIVER_{rid}@example.com", "password": "pass1234", "name": f"Driver {rid}"}
-    r = session.post(f"{API}/auth/register", json=data)
-    assert r.status_code == 200, r.text
-    state["driver_token"] = r.json()["token"]
-    state["driver_id"] = r.json()["user"]["user_id"]
-
-    r = session.post(
-        f"{API}/drivers/register",
-        json={"vehicle_type": "car", "vehicle_plate": "LAG-123", "vehicle_color": "Blue", "vehicle_model": "Toyota Camry", "phone": "08000000000"},
-        headers={"Authorization": f"Bearer {state['driver_token']}"},
-    )
-    assert r.status_code == 200, r.text
-
-    r = session.post(
-        f"{API}/drivers/status",
-        json={"is_online": True, "lat": 6.5080, "lng": 3.3720},
-        headers={"Authorization": f"Bearer {state['driver_token']}"},
-    )
-    assert r.status_code == 200, r.text
-    assert r.json()["is_online"] == 1
-    return r.json()
+    acc = make_verified_online_driver(session, "DRIVER", vehicle_type="car", plate="LAG-123", lat=6.5080, lng=3.3720)
+    state["driver_token"] = acc["token"]
+    state["driver_id"] = acc["user"]["user_id"]
+    return acc
 
 
 class TestDriverFlow:
@@ -94,8 +78,8 @@ class TestZonesAndEstimate:
         assert body["distance_km"] > 0
         assert "cash" in body["payment_methods"]
 
-    def test_keke_banned_in_wuse(self, session, state):
-        r = session.post(f"{API}/rides/estimate", json={"vehicle_type": "keke", **WUSE})
+    def test_bike_banned_in_wuse(self, session, state):
+        r = session.post(f"{API}/rides/estimate", json={"vehicle_type": "bike", **WUSE})
         assert r.status_code == 200, r.text
         body = r.json()
         assert body["allowed"] is False
@@ -121,10 +105,10 @@ class TestRideLifecycle:
         assert body["driver_eta_minutes"] is not None
         state["ride_id"] = body["ride_id"]
 
-    def test_request_keke_in_wuse_rejected(self, session, rider, driver, state):
+    def test_request_bike_in_wuse_rejected(self, session, rider, driver, state):
         r = session.post(
             f"{API}/rides",
-            json={"vehicle_type": "keke", **WUSE},
+            json={"vehicle_type": "bike", **WUSE},
             headers={"Authorization": f"Bearer {state['rider_token']}"},
         )
         assert r.status_code == 400
