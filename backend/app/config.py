@@ -86,13 +86,23 @@ AUTO_VERIFY_DRIVERS = os.environ.get("AUTO_VERIFY_DRIVERS", "1") == "1"
 # Minimum number of uploaded ID/license documents required before auto-verify.
 VERIFICATION_REQUIRED_DOCS = int(os.environ.get("VERIFICATION_REQUIRED_DOCS", 1))
 
-# Face liveness provider: "dev" is an offline stub that auto-passes well-formed
-# selfies. Swap in a real provider (e.g. Prembly, SmileID, Passbase) via
-# LIVENESS_PROVIDER + credentials; secrets live in server env vars only.
-LIVENESS_PROVIDER = os.environ.get("LIVENESS_PROVIDER", "dev")
-LIVENESS_API_KEY = os.environ.get("LIVENESS_API_KEY", "")
-LIVENESS_API_SECRET = os.environ.get("LIVENESS_API_SECRET", "")
-LIVENESS_BASE_URL = os.environ.get("LIVENESS_BASE_URL", "")
+# Face liveness + ID cross-check provider (SmileID — freemium, free sandbox).
+# Leave SMILEDID_PARTNER_ID / SMILEDID_API_KEY empty to keep the offline dev
+# stub that auto-passes liveness; the app then runs without any provider.
+#   SMILEDID_ENV=sandbox  -> free test identities (see SmileID docs)
+#   SMILEDID_ENV=prod     -> live government database lookups (paid, freemium tier)
+SMILEDID_PARTNER_ID = os.environ.get("SMILEDID_PARTNER_ID", "")
+SMILEDID_API_KEY = os.environ.get("SMILEDID_API_KEY", "")
+SMILEDID_ENV = os.environ.get("SMILEDID_ENV", "sandbox")
+
+# SmileID access tokens last 15 minutes; refresh before expiry.
+SMILEDID_TOKEN_TTL_SECONDS = int(os.environ.get("SMILEDID_TOKEN_TTL_SECONDS", 840))
+# Polling behaviour while waiting on async verification jobs.
+SMILEDID_POLL_INTERVAL = int(os.environ.get("SMILEDID_POLL_INTERVAL", 5))
+SMILEDID_POLL_TIMEOUT = int(os.environ.get("SMILEDID_POLL_TIMEOUT", 75))
+
+# Consent privacy-notice URL required by SmileID request contracts.
+PRIVACY_POLICY_URL = os.environ.get("PRIVACY_POLICY_URL", "https://naijamove.com/privacy")
 
 # Payment providers (secrets never shipped to the frontend)
 PAYSTACK_SECRET_KEY = os.environ.get("PAYSTACK_SECRET_KEY", "")

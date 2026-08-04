@@ -204,21 +204,6 @@ export default function VerifyDriverScreen() {
               <TextInput style={styles.input} placeholder="License expiry (e.g. 2028-05-30)" placeholderTextColor={colors.textSecondary} autoCapitalize="none" value={licenseExpiry} onChangeText={setLicenseExpiry} />
             </View>
 
-            <Text style={styles.section}>Live selfie (face liveness)</Text>
-            <TouchableOpacity style={styles.uploadCard} onPress={() => setShowCamera(true)} disabled={uploading || checkingLiveness} testID="verify-selfie">
-              <View style={styles.uploadIcon}>
-                {liveness?.status === "passed" ? <Ionicons name="checkmark-circle" size={22} color={colors.empty} /> : <Ionicons name="scan" size={22} color={colors.primary} />}
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.uploadTitle}>{liveness?.status === "passed" ? "Liveness passed" : "Take a live selfie"}</Text>
-                <Text style={styles.uploadMeta}>A live photo (not an uploaded one) confirms that this is really you</Text>
-              </View>
-              {checkingLiveness ? <ActivityIndicator color={colors.primary} /> : <Ionicons name="chevron-forward" size={18} color={colors.textSecondary} />}
-            </TouchableOpacity>
-            {liveness?.status === "failed" ? (
-              <View style={styles.livenessFail}><Ionicons name="alert-circle" size={16} color={colors.delayed} /><Text style={styles.livenessFailText}>Liveness check failed. Retake with a clear, well-lit photo of your face.</Text></View>
-            ) : null}
-
             <Text style={styles.section}>Documents ({documents.length})</Text>
             {documents.map((url, i) => (
               <View key={url} style={styles.docRow}>
@@ -237,6 +222,21 @@ export default function VerifyDriverScreen() {
               </View>
               {uploading ? <ActivityIndicator color={colors.primary} /> : <Ionicons name="cloud-upload" size={20} color={colors.primary} />}
             </TouchableOpacity>
+
+            <Text style={styles.section}>Live selfie (face liveness)</Text>
+            <TouchableOpacity style={styles.uploadCard} onPress={() => setShowCamera(true)} disabled={uploading || checkingLiveness} testID="verify-selfie">
+              <View style={styles.uploadIcon}>
+                {liveness?.status === "passed" ? <Ionicons name="checkmark-circle" size={22} color={colors.empty} /> : <Ionicons name="scan" size={22} color={colors.primary} />}
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.uploadTitle}>{liveness?.status === "passed" ? "Liveness passed" : "Take a live selfie"}</Text>
+                <Text style={styles.uploadMeta}>A live photo (not an uploaded one) confirms that this is really you</Text>
+              </View>
+              {checkingLiveness ? <ActivityIndicator color={colors.primary} /> : <Ionicons name="chevron-forward" size={18} color={colors.textSecondary} />}
+            </TouchableOpacity>
+            {liveness?.status === "failed" ? (
+              <View style={styles.livenessFail}><Ionicons name="alert-circle" size={16} color={colors.delayed} /><Text style={styles.livenessFailText}>{liveness.message || "Liveness check failed. Retake with a clear, well-lit photo of your face."}</Text></View>
+            ) : null}
 
             <TouchableOpacity style={[styles.submitBtn, (busy || uploading || checkingLiveness) && { opacity: 0.6 }]} onPress={submit} disabled={busy || uploading || checkingLiveness} testID="verify-submit">
               {busy ? <ActivityIndicator color="#fff" /> : <><Ionicons name="checkmark" size={18} color="#fff" /><Text style={styles.submitText}>Submit for verification</Text></>}

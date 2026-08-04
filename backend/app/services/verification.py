@@ -1,6 +1,5 @@
 """Driver verification helpers."""
 import json
-import uuid
 from typing import Optional
 
 from ..models.driver import DriverProfile
@@ -53,25 +52,3 @@ def is_application_complete(d: DriverProfile, required_docs: int) -> bool:
         and len(docs) >= required_docs
         and d.liveness_status == "passed"
     )
-
-
-def run_liveness_check(selfie_url: str, id_image_url: Optional[str] = None) -> tuple[str, Optional[str], str]:
-    """Run a face liveness check against a live selfie.
-
-    Returns (status, ref, message). The default "dev" provider is an offline
-    stub that passes well-formed selfies so the full flow is exercisable; a real
-    provider (Prembly, SmileID, ...) is wired through LIVENESS_PROVIDER +
-    credentials without changing this contract. Unsupported providers fail
-    closed rather than silently approving.
-    """
-    from ..config import LIVENESS_PROVIDER
-
-    if not selfie_url or not isinstance(selfie_url, str) or len(selfie_url) > 500:
-        return "failed", None, "No valid selfie provided"
-
-    if LIVENESS_PROVIDER and LIVENESS_PROVIDER != "dev":
-        # TODO(provider): call LIVENESS_BASE_URL with LIVENESS_API_KEY /
-        # LIVENESS_API_SECRET and return the provider's verdict + reference.
-        return "failed", None, "Liveness provider not configured"
-
-    return "passed", f"liveness_{uuid.uuid4().hex[:12]}", "Liveness confirmed"

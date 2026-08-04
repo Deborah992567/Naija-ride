@@ -22,12 +22,8 @@ from ..schemas.verification import (
 )
 from ..services.audit import log_audit
 from ..services.notifications import notify
-from ..services.verification import (
-    admin_verification_out,
-    is_application_complete,
-    run_liveness_check,
-    verification_out,
-)
+from ..services.smileid import run_driver_identity_check
+from ..services.verification import admin_verification_out, is_application_complete, verification_out
 
 router = APIRouter(prefix="/api", tags=["verification"])
 
@@ -86,7 +82,7 @@ async def submit_liveness(
     if not profile:
         raise HTTPException(status_code=404, detail="Register as a driver first")
 
-    status, ref, message = run_liveness_check(data.selfie_url, data.id_image_url)
+    status, ref, message = await run_driver_identity_check(profile, user, data.selfie_url)
     profile.liveness_status = status
     profile.liveness_ref = ref
     if status == "passed":
