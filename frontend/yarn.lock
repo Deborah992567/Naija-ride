@@ -1036,6 +1036,19 @@
     resolve-from "^5.0.0"
     semver "^7.6.0"
 
+"@expo/image-utils@^0.11.4":
+  version "0.11.4"
+  resolved "https://registry.yarnpkg.com/@expo/image-utils/-/image-utils-0.11.4.tgz#2101c05a8449540c12f74687600f2792b3918cb1"
+  integrity sha512-pn/4770DIEOcYZr484uazuwg20FX/qaDkeMRF6J+oxejynDmEmO8wLsCudaNShFE0BhyKGQTYrs2rsRhqrqESw==
+  dependencies:
+    "@expo/require-utils" "^57.0.4"
+    "@expo/spawn-async" "^1.8.0"
+    chalk "^4.0.0"
+    getenv "^2.0.0"
+    jimp-compact "0.16.1"
+    parse-png "^2.1.0"
+    semver "^7.6.0"
+
 "@expo/image-utils@^0.8.8":
   version "0.8.14"
   resolved "https://registry.npmjs.org/@expo/image-utils/-/image-utils-0.8.14.tgz"
@@ -1178,6 +1191,15 @@
   version "55.0.5"
   resolved "https://registry.npmjs.org/@expo/require-utils/-/require-utils-55.0.5.tgz"
   integrity sha512-U4K/CQ2VpXuwfNGsN+daKmYOt15hCP8v/pXaYH6eut7kdYZo6SfJ1yr67BIcJ+1Gzzs+QzTxswAZChKpXmceyw==
+  dependencies:
+    "@babel/code-frame" "^7.20.0"
+    "@babel/core" "^7.25.2"
+    "@babel/plugin-transform-modules-commonjs" "^7.24.8"
+
+"@expo/require-utils@^57.0.4":
+  version "57.0.4"
+  resolved "https://registry.yarnpkg.com/@expo/require-utils/-/require-utils-57.0.4.tgz#fcf4377a64a21a70c00c787a9b8fc95ac438cc79"
+  integrity sha512-e7xbg/9BTQcsZE/oErafZXtI7kh5IgfasLJ97J5sFSzX2cA74pDvdlhW1KHVSaDkQyQv6h1LSLhsY7dEeOk7hw==
   dependencies:
     "@babel/code-frame" "^7.20.0"
     "@babel/core" "^7.25.2"
@@ -3695,10 +3717,12 @@ expo-linking@~8.0.11:
     expo-constants "~18.0.13"
     invariant "^2.2.4"
 
-expo-location@~19.0.8:
-  version "19.0.8"
-  resolved "https://registry.npmjs.org/expo-location/-/expo-location-19.0.8.tgz"
-  integrity sha512-H/FI75VuJ1coodJbbMu82pf+Zjess8X8Xkiv9Bv58ZgPKS/2ztjC1YO1/XMcGz7+s9DrbLuMIw22dFuP4HqneA==
+expo-location@~57.0.7:
+  version "57.0.7"
+  resolved "https://registry.yarnpkg.com/expo-location/-/expo-location-57.0.7.tgz#396275bd1fef59a959f774afc7732e08755b198b"
+  integrity sha512-HPsS6Sse8GgMv9QiENXUEp9awl0O6iX0mFKJkxsHtC1HiouDXKCDlSnW66/E6U1ykwZ2M9ymJnZLRpWu0ua+/g==
+  dependencies:
+    "@expo/image-utils" "^0.11.4"
 
 expo-modules-autolinking@3.0.26:
   version "3.0.26"
