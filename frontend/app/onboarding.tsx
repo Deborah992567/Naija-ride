@@ -20,7 +20,7 @@ const { width, height } = Dimensions.get("window");
 const slides = [
   {
     title: "Know your ride",
-    body: "See live buses, danfos, keke and campus shuttles around you.",
+    body: "See live buses, danfos, bikes and campus shuttles around you.",
     image: require("../assets/images/onboarding/onboard_1.jpeg"),
   },
   {

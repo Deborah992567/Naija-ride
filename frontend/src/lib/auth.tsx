@@ -4,19 +4,29 @@ import { Platform } from "react-native";
 import * as WebBrowser from "expo-web-browser";
 import * as Linking from "expo-linking";
 import { api, clearToken, getToken, setToken, User } from "./api";
-import { registerForPushNotifications } from "./notifications";
+import { registerForPushNotifications } from "./push";
 
 type AuthState = {
   user: User | null;
   loading: boolean;
   signIn: (email: string, password: string) => Promise<void>;
-  signUp: (email: string, password: string, name?: string) => Promise<void>;
+  signUp: (email: string, password: string, name?: string, state?: string, referral_code?: string) => Promise<void>;
   signInGoogle: () => Promise<void>;
   signOut: () => Promise<void>;
+  deleteAccount: (password?: string) => Promise<void>;
   refresh: () => Promise<void>;
 };
 
 const AuthContext = createContext<AuthState | null>(null);
+
+// Landing screen for each role: admins get the console, drivers get the job
+// dashboard, everyone else (riders / regular users) gets the ride screen.
+export function roleHome(user: User | null): "/onboarding" | "/(tabs)/admin" | "/(tabs)/drive" | "/(tabs)/ride" {
+  if (!user) return "/onboarding";
+  if (user.is_admin === 1 || user.role === "admin") return "/(tabs)/admin";
+  if (user.role === "driver") return "/(tabs)/drive";
+  return "/(tabs)/ride";
+}
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
@@ -31,7 +41,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const u = await api.me();
       setUser(u);
-      void registerForPushNotifications();
     } catch {
       await clearToken();
       setUser(null);
@@ -45,18 +54,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     })();
   }, [loadMe]);
 
+  // Re-register the push token whenever a signed-in session is (re)established.
+  useEffect(() => {
+    if (user) {
+      registerForPushNotifications().catch(() => {});
+    }
+  }, [user?.user_id]);
+
   async function signIn(email: string, password: string) {
     const { token, user: u } = await api.login(email, password);
     await setToken(token);
     setUser(u);
-    void registerForPushNotifications();
   }
 
-  async function signUp(email: string, password: string, name?: string) {
-    const { token, user: u } = await api.register(email, password, name);
+  async function signUp(email: string, password: string, name?: string, state?: string, referral_code?: string) {
+    const { token, user: u } = await api.register(email, password, name, state, referral_code);
     await setToken(token);
     setUser(u);
-    void registerForPushNotifications();
   }
 
   async function signInGoogle() {
@@ -82,7 +96,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const { token, user: u } = await api.googleSession(sid);
     await setToken(token);
     setUser(u);
-    void registerForPushNotifications();
   }
 
   async function signOut() {
@@ -93,8 +106,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(null);
   }
 
+  async function deleteAccount(password?: string) {
+    await api.deleteAccount(password);
+    await clearToken();
+    setUser(null);
+  }
+
   return (
-    <AuthContext.Provider value={{ user, loading, signIn, signUp, signInGoogle, signOut, refresh: loadMe }}>
+    <AuthContext.Provider
+      value={{ user, loading, signIn, signUp, signInGoogle, signOut, deleteAccount, refresh: loadMe }}
+    >
       {children}
     </AuthContext.Provider>
   );

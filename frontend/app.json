@@ -1,26 +1,36 @@
 {
   "expo": {
     "name": "NaijaMove",
-    "slug": "frontend",
+    "slug": "naijamove",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "frontend",
+    "scheme": "naijamove",
     "userInterfaceStyle": "light",
     "newArchEnabled": true,
+    "extra": {
+      "eas": {
+        "projectId": "592ed064-b35a-4b76-be05-5e114438da2a"
+      }
+    },
     "ios": {
       "supportsTablet": true,
+      "bundleIdentifier": "com.naijamove.app",
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "Share your location to report nearby vehicles"
       }
     },
     "android": {
+      "package": "com.naijamove.app",
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#008751"
       },
       "edgeToEdgeEnabled": true,
-      "permissions": ["ACCESS_COARSE_LOCATION", "ACCESS_FINE_LOCATION"]
+      "permissions": [
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION"
+      ]
     },
     "web": {
       "bundler": "metro",
@@ -29,8 +39,8 @@
     },
     "plugins": [
       "expo-router",
-      "expo-notifications" ,
-        [
+      "expo-notifications",
+      [
         "expo-splash-screen",
         {
           "image": "./assets/images/splash-image.png",
@@ -45,8 +55,8 @@
         {
           "locationAlwaysAndWhenInUsePermission": "Share your location to report nearby vehicles"
         }
-      ]
-      
+      ],
+      "@maplibre/maplibre-react-native"
     ],
     "experiments": {
       "typedRoutes": true

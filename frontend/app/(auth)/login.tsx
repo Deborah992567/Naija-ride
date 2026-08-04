@@ -73,7 +73,7 @@ export default function Login() {
           </View>
 
           <Text style={styles.title}>Welcome back</Text>
-          <Text style={styles.subtitle}>Sign in to track buses, danfo, keke and shuttles in real time.</Text>
+          <Text style={styles.subtitle}>Sign in to track buses, danfo, bikes and shuttles in real time.</Text>
 
           {error && (
             <View style={styles.errorBox} testID="login-error">

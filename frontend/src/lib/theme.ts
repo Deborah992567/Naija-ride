@@ -24,15 +24,3 @@ export const colors = {
 export const radii = { sm: 6, md: 12, lg: 16, xl: 24, sheet: 28, pill: 999 };
 export const spacing = { xs: 4, sm: 8, md: 16, lg: 24, xl: 32 };
 
-export const vehicleMeta: Record<string, { label: string; color: string; icon: "bus" | "car" | "bicycle" | "bus-outline" }> = {
-  bus: { label: "Bus", color: "#008751", icon: "bus" },
-  danfo: { label: "Danfo", color: "#FFCC00", icon: "bus-outline" },
-  keke: { label: "Keke", color: "#475569", icon: "bicycle" },
-  shuttle: { label: "Shuttle", color: "#0EA5E9", icon: "bus" },
-};
-
-export const crowdMeta: Record<string, { label: string; color: string; bars: number }> = {
-  empty: { label: "Empty", color: "#10B981", bars: 1 },
-  moderate: { label: "Moderate", color: "#F59E0B", bars: 2 },
-  packed: { label: "Packed", color: "#EF4444", bars: 3 },
-};
