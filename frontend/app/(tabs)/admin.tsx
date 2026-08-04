@@ -619,6 +619,10 @@ export default function AdminScreen() {
               {v.document_urls.length > 0 ? (
                 <View style={styles.cardRow}><Ionicons name="images" size={14} color={colors.textSecondary} /><Text style={styles.cardRowText}>{v.document_urls.length} document{v.document_urls.length === 1 ? "" : "s"} uploaded</Text></View>
               ) : null}
+              <View style={styles.cardRow}>
+                <Ionicons name="scan" size={14} color={v.liveness_status === "passed" ? colors.empty : colors.delayed} />
+                <Text style={styles.cardRowText}>Liveness {v.liveness_status ?? "none"}{v.liveness_ref ? ` · ${v.liveness_ref}` : ""}</Text>
+              </View>
               <View style={styles.actions}>
                 <TouchableOpacity style={[styles.approveBtn, busy === v.user_id && { opacity: 0.6 }]} onPress={() => reviewVerification(v.user_id, "verified")} disabled={busy !== null} testID="admin-approve-verification">
                   {busy === v.user_id ? <ActivityIndicator color="#fff" size="small" /> : <><Ionicons name="checkmark" size={16} color="#fff" /><Text style={styles.approveText}>Approve</Text></>}

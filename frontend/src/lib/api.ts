@@ -562,6 +562,8 @@ export const api = {
     profile_photo?: string | null;
     document_urls?: string[];
   }) => request<DriverVerification>("/drivers/verification", { method: "POST", body: JSON.stringify(body) }, true),
+  submitDriverLiveness: (body: { selfie_url: string; id_image_url?: string | null }) =>
+    request<LivenessResult>("/drivers/verification/liveness", { method: "POST", body: JSON.stringify(body) }, true),
 };
 
 export type AdminVerification = {
@@ -577,6 +579,8 @@ export type AdminVerification = {
   license_number: string | null;
   license_expiry: string | null;
   document_urls: string[];
+  liveness_status: string;
+  liveness_ref: string | null;
   submitted_at: string | null;
 };
 
@@ -941,4 +945,13 @@ export type DriverVerification = {
   license_expiry: string | null;
   profile_photo: string | null;
   document_urls: string[];
+  liveness_status: string;
+  liveness_ref: string | null;
+};
+
+export type LivenessResult = {
+  status: string;
+  liveness_status: string;
+  liveness_ref: string | null;
+  message: string;
 };

@@ -56,6 +56,12 @@
           "locationAlwaysAndWhenInUsePermission": "Share your location to report nearby vehicles"
         }
       ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow NaijaMove to use your camera to verify your identity with a live selfie."
+        }
+      ],
       "@maplibre/maplibre-react-native"
     ],
     "experiments": {
