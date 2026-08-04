@@ -1,10 +1,13 @@
 import { Tabs } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useAuth } from "@/src/lib/auth";
 import { colors } from "@/src/lib/theme";
 
 export default function TabsLayout() {
   const insets = useSafeAreaInsets();
+  const { user } = useAuth();
+  const isDriver = user?.role === "driver";
   return (
     <Tabs
       screenOptions={{
@@ -25,8 +28,8 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="index"
         options={{
-          title: "Map",
-          tabBarIcon: ({ color, size }) => <Ionicons name="map" size={size} color={color} />,
+          title: "Home",
+          tabBarIcon: ({ color, size }) => <Ionicons name="home" size={size} color={color} />,
           tabBarButtonTestID: "tab-map",
         }}
       />
@@ -34,31 +37,17 @@ export default function TabsLayout() {
         name="ride"
         options={{
           title: "Ride",
+          href: isDriver ? null : undefined,
           tabBarIcon: ({ color, size }) => <Ionicons name="car" size={size} color={color} />,
           tabBarButtonTestID: "tab-ride",
-        }}
-      />
-      <Tabs.Screen
-        name="routes"
-        options={{
-          title: "Routes",
-          tabBarIcon: ({ color, size }) => <Ionicons name="git-branch" size={size} color={color} />,
-          tabBarButtonTestID: "tab-routes",
-        }}
-      />
-      <Tabs.Screen
-        name="report"
-        options={{
-          title: "Report",
-          tabBarIcon: ({ color, size }) => <Ionicons name="megaphone" size={size} color={color} />,
-          tabBarButtonTestID: "tab-report",
         }}
       />
       <Tabs.Screen
         name="drive"
         options={{
           title: "Drive",
-          tabBarIcon: ({ color, size }) => <Ionicons name="bus" size={size} color={color} />,
+          href: isDriver ? undefined : null,
+          tabBarIcon: ({ color, size }) => <Ionicons name="car-sport" size={size} color={color} />,
           tabBarButtonTestID: "tab-drive",
         }}
       />
@@ -68,6 +57,15 @@ export default function TabsLayout() {
           title: "Profile",
           tabBarIcon: ({ color, size }) => <Ionicons name="person-circle" size={size} color={color} />,
           tabBarButtonTestID: "tab-profile",
+        }}
+      />
+      <Tabs.Screen
+        name="admin"
+        options={{
+          title: "Admin",
+          href: user?.is_admin === 1 ? undefined : null,
+          tabBarIcon: ({ color, size }) => <Ionicons name="shield" size={size} color={color} />,
+          tabBarButtonTestID: "tab-admin",
         }}
       />
     </Tabs>
