@@ -1,25 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Alert, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { ActivityIndicator, Alert, Image, ScrollView, Share, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import * as Location from "expo-location";
 import * as WebBrowser from "expo-web-browser";
-import { api, ridesWsUrl, type PaymentMethod, type RideEvent, type RideOut, type RideStatus, type TripOut, type VehicleType } from "@/src/lib/api";
+import { api, ridesWsUrl, type CouponValidateOut, type DriverEta, type PaymentMethod, type Place, type RideEvent, type RideOut, type RideStatus, type TripOut, type VehicleType } from "@/src/lib/api";
 import { colors, radii, spacing } from "@/src/lib/theme";
-
-type Destination = { name: string; area: string; lat: number; lng: number };
-
-const DESTINATIONS: Destination[] = [
-  { name: "CMS", area: "Lagos Island", lat: 6.4534, lng: 3.3942 },
-  { name: "Yaba", area: "Lagos Mainland", lat: 6.51, lng: 3.37 },
-  { name: "Ikeja", area: "Lagos", lat: 6.6018, lng: 3.3515 },
-  { name: "Lekki Phase 1", area: "Lagos", lat: 6.4478, lng: 3.4723 },
-  { name: "Victoria Island", area: "Lagos", lat: 6.4281, lng: 3.4219 },
-  { name: "Surulere", area: "Lagos", lat: 6.5013, lng: 3.3553 },
-  { name: "Wuse Market", area: "Abuja", lat: 9.0765, lng: 7.4730 },
-  { name: "Garki", area: "Abuja", lat: 9.033, lng: 7.49 },
-  { name: "Maitama", area: "Abuja", lat: 9.088, lng: 7.499 },
-];
+import LiveMap from "@/src/components/live-map";
+import BookingMap from "@/src/components/booking-map";
+import PlaceAutocomplete from "@/src/components/place-autocomplete";
 
 const STATUS_STEPS: Record<string, { label: string; icon: "time" | "car" | "location" | "navigate" | "flag" }> = {
   requested: { label: "Finding a driver", icon: "time" },
@@ -32,31 +22,72 @@ const STATUS_STEPS: Record<string, { label: string; icon: "time" | "car" | "loca
 const PAYMENT_LABELS: Record<PaymentMethod, string> = { cash: "Cash", card: "Card", transfer: "Bank transfer" };
 
 export default function RideScreen() {
-  const [pickup, setPickup] = useState<{ lat: number; lng: number } | null>(null);
-  const [dropoff, setDropoff] = useState<Destination | null>(null);
-  const [vehicle, setVehicle] = useState<VehicleType>("car");
+  const router = useRouter();
+  const [pickup, setPickup] = useState<Place | null>(null);
+  const [dropoff, setDropoff] = useState<Place | null>(null);
+  const [locating, setLocating] = useState(false);
+  const vehicle: VehicleType = "car";
   const [payment, setPayment] = useState<PaymentMethod>("cash");
   const [estimate, setEstimate] = useState<Awaited<ReturnType<typeof api.estimateRide>> | null>(null);
+  const [couponInput, setCouponInput] = useState("");
+  const [coupon, setCoupon] = useState<CouponValidateOut | null>(null);
+  const [couponError, setCouponError] = useState<string | null>(null);
+  const [couponBusy, setCouponBusy] = useState(false);
   const [phase, setPhase] = useState<"form" | "active">("form");
   const [ride, setRide] = useState<RideOut | null>(null);
   const [trip, setTrip] = useState<TripOut | null>(null);
   const [driverLocation, setDriverLocation] = useState<{ lat: number; lng: number } | null>(null);
+  const [eta, setEta] = useState<DriverEta | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
 
-  useEffect(() => {
-    (async () => {
-      try {
-        let permission = await Location.getForegroundPermissionsAsync();
-        if (permission.status !== "granted") permission = await Location.requestForegroundPermissionsAsync();
-        if (permission.status === "granted") {
-          const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-          setPickup({ lat: pos.coords.latitude, lng: pos.coords.longitude });
-        }
-      } catch {}
-    })();
+  const nameCurrentPosition = useCallback(async (lat: number, lng: number) => {
+    const fallback: Place = { name: "My current location", lat, lng, state: null, city: null, category: null };
+    try {
+      const place = await api.reverseGeocode(lat, lng);
+      setPickup({ ...place, name: place.name || "My current location" });
+    } catch {
+      setPickup(fallback);
+    }
   }, []);
+
+  const getMyLocation = useCallback(async () => {
+    if (locating) return;
+    setLocating(true);
+    try {
+      let permission = await Location.getForegroundPermissionsAsync();
+      if (permission.status !== "granted") permission = await Location.requestForegroundPermissionsAsync();
+      if (permission.status !== "granted") {
+        setPickup({ name: "Permission denied — search for pickup", lat: 6.5244, lng: 3.3792, state: null, city: null, category: null });
+        return;
+      }
+      const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+      await nameCurrentPosition(pos.coords.latitude, pos.coords.longitude);
+    } catch {
+      setMessage("Could not get your location. Try searching for pickup instead.");
+    } finally {
+      setLocating(false);
+    }
+  }, [locating, nameCurrentPosition]);
+
+  useEffect(() => {
+    getMyLocation();
+  }, []);
+
+  const tapMap = useCallback((lat: number, lng: number) => {
+    setDropoff({ name: "Pinned on map", lat, lng, state: null, city: null, category: null });
+    api.reverseGeocode(lat, lng)
+      .then((place) => setDropoff((prev) => (prev && prev.lat === lat && prev.lng === lng ? { ...place, name: place.name || "Pinned on map" } : prev)))
+      .catch(() => {});
+  }, []);
+
+  const swapPlaces = useCallback(() => {
+    setPickup(dropoff);
+    setDropoff(pickup);
+    setCoupon(null);
+    setCouponError(null);
+  }, [pickup, dropoff]);
 
   useEffect(() => {
     return () => wsRef.current?.close();
@@ -67,7 +98,31 @@ export default function RideScreen() {
     api.estimateRide({ pickup_lat: pickup.lat, pickup_lng: pickup.lng, dropoff_lat: dropoff.lat, dropoff_lng: dropoff.lng, vehicle_type: vehicle })
       .then(setEstimate)
       .catch(() => setEstimate(null));
+    setCoupon(null);
+    setCouponError(null);
   }, [pickup, dropoff, vehicle]);
+
+  const applyCoupon = useCallback(async () => {
+    if (!couponInput.trim() || !estimate) return;
+    setCouponBusy(true);
+    setCouponError(null);
+    try {
+      const result = await api.validateCoupon(couponInput.trim(), "ride", estimate.fare);
+      setCoupon(result);
+      setCouponError(null);
+    } catch (error) {
+      setCoupon(null);
+      setCouponError(error instanceof Error ? error.message : "Could not apply this code.");
+    } finally {
+      setCouponBusy(false);
+    }
+  }, [couponInput, estimate]);
+
+  const clearCoupon = useCallback(() => {
+    setCoupon(null);
+    setCouponError(null);
+    setCouponInput("");
+  }, []);
 
   const openSocket = useCallback(async () => {
     wsRef.current?.close();
@@ -82,6 +137,9 @@ export default function RideScreen() {
           api.getRide(data.ride_id).then(setRide).catch(() => {});
         } else if (data.event === "driver.location") {
           setDriverLocation({ lat: data.lat, lng: data.lng });
+          if (data.eta_minutes != null && data.target) {
+            setEta({ minutes: data.eta_minutes, target: data.target });
+          }
         } else if (data.event === "ride.completed") {
           api.getRide(data.ride_id).then(setRide).catch(() => {});
         } else if (data.event === "ride.cancelled") {
@@ -109,21 +167,23 @@ export default function RideScreen() {
       const result = await api.requestRide({
         pickup_lat: pickup.lat,
         pickup_lng: pickup.lng,
-        pickup_address: "My location",
+        pickup_address: pickup.name ?? "My location",
         dropoff_lat: dropoff.lat,
         dropoff_lng: dropoff.lng,
-        dropoff_address: dropoff.name,
+        dropoff_address: dropoff.name ?? "Destination",
         vehicle_type: vehicle,
         payment_method: payment,
+        coupon_code: coupon ? coupon.code : undefined,
       });
       setRide(result);
+      setEta(result.driver_eta_minutes != null ? { minutes: result.driver_eta_minutes, target: "pickup" } : null);
       setPhase("active");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not request this ride.");
     } finally {
       setBusy(false);
     }
-  }, [pickup, dropoff, vehicle, payment]);
+  }, [pickup, dropoff, vehicle, payment, coupon]);
 
   const cancelRide = useCallback(async () => {
     if (!ride) return;
@@ -133,6 +193,7 @@ export default function RideScreen() {
       wsRef.current?.close();
       setRide(null);
       setDriverLocation(null);
+      setEta(null);
       setTrip(null);
       setPhase("form");
       setMessage("Ride cancelled.");
@@ -185,6 +246,51 @@ export default function RideScreen() {
     setDriverLocation(null);
   }, [trip]);
 
+  const shareTrip = useCallback(async () => {
+    if (!ride) return;
+    setBusy(true);
+    try {
+      const share = await api.shareRide(ride.ride_id);
+      try {
+        await Share.share({ message: `Track my Naija Ride live: ${share.url}` });
+      } catch {}
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not create share link.");
+    } finally {
+      setBusy(false);
+    }
+  }, [ride]);
+
+  const sos = useCallback(async () => {
+    if (!ride) return;
+    Alert.alert("Raise SOS?", "This alerts the safety team and the other party on this ride.", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Raise SOS",
+        style: "destructive",
+        onPress: async () => {
+          setBusy(true);
+          try {
+            await api.raiseEmergency({ ride_id: ride.ride_id });
+            setMessage("SOS raised. Help is on the way.");
+          } catch (error) {
+            setMessage(error instanceof Error ? error.message : "Could not raise SOS.");
+          } finally {
+            setBusy(false);
+          }
+        },
+      },
+    ]);
+  }, [ride]);
+
+  const openChat = useCallback(() => {
+    if (!ride) return;
+    router.push({
+      pathname: "/chat",
+      params: { entity: "ride", entity_id: ride.ride_id, title: ride.driver?.name ?? "Your driver" },
+    });
+  }, [ride, router]);
+
   const liveStep = (step: string) => {
     const order = ["requested", "accepted", "arriving", "in_progress"];
     return step === "completed" ? 4 : order.indexOf(step);
@@ -192,10 +298,32 @@ export default function RideScreen() {
 
   if (phase === "active" && ride && !trip) {
     const stepIdx = liveStep(ride.status);
+    const liveEta = eta ?? (ride.driver_eta_minutes != null && ride.status !== "in_progress" ? { minutes: ride.driver_eta_minutes, target: "pickup" as const } : null);
     return (
       <SafeAreaView style={styles.root} edges={["top"]}>
         <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
           <View style={styles.hero}><View style={styles.heroIcon}><Ionicons name="car" size={22} color="#fff" /></View><View style={{ flex: 1 }}><Text style={styles.title}>{statusStep?.label}</Text><Text style={styles.subtitle}>{ride.pickup_address ?? "Pickup"} → {ride.dropoff_address ?? "Dropoff"}</Text></View>{ride.status === "requested" ? <TouchableOpacity onPress={cancelRide} disabled={busy} testID="ride-cancel-button"><Text style={styles.cancelText}>Cancel</Text></TouchableOpacity> : null}</View>
+
+          <View style={styles.mapSpacer}>
+            <LiveMap
+              pickup={{ lat: ride.pickup_lat, lng: ride.pickup_lng }}
+              dropoff={{ lat: ride.dropoff_lat, lng: ride.dropoff_lng }}
+              driver={driverLocation ?? (ride.driver?.current_lat != null && ride.driver?.current_lng != null ? { lat: ride.driver.current_lat, lng: ride.driver.current_lng } : null)}
+              driverLabel={ride.driver?.name ?? "Driver"}
+              height={320}
+            />
+          </View>
+
+          {ride.driver && liveEta ? (
+            <View style={styles.etaBanner} testID="ride-eta-banner">
+              <View style={styles.etaIcon}><Ionicons name="navigate" size={16} color="#fff" /></View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.etaTitle}>{liveEta.target === "dropoff" ? "Arriving at dropoff" : "Driver is on the way"}</Text>
+                <Text style={styles.etaSub}>{liveEta.target === "dropoff" ? "Estimated arrival, updates live" : "Reaching your pickup, updates live"}</Text>
+              </View>
+              <Text style={styles.etaValue}>~{liveEta.minutes} min</Text>
+            </View>
+          ) : null}
 
           <View style={styles.timeline}>
             {["requested", "accepted", "arriving", "in_progress"].map((s, i) => (
@@ -209,20 +337,37 @@ export default function RideScreen() {
 
           {ride.driver ? (
             <View style={styles.driverCard} testID="ride-driver-card">
-              <View style={styles.driverAvatar}><Ionicons name="person" size={20} color="#fff" /></View>
-              <View style={{ flex: 1 }}><Text style={styles.driverName}>{ride.driver.name ?? "Your driver"}</Text><Text style={styles.driverMeta}>{ride.driver.vehicle_model ?? ride.driver.vehicle_type} · {ride.driver.vehicle_color ?? ""} · {ride.driver.vehicle_plate ?? ""}</Text></View>
+              <View style={styles.driverAvatar}>{ride.driver.profile_photo ? <Image source={{ uri: ride.driver.profile_photo }} style={styles.driverPhoto} /> : <Ionicons name="person" size={20} color="#fff" />}</View>
+              <View style={{ flex: 1 }}><Text style={styles.driverName}>{ride.driver.name ?? "Your driver"}</Text><Text style={styles.driverMeta}>{(ride.driver.vehicle_model ?? "Vehicle")} · {ride.driver.vehicle_color ?? ""} · {ride.driver.vehicle_plate ?? ""}</Text></View>
               <View style={styles.driverRating}><Ionicons name="star" size={13} color={colors.secondaryDark} /><Text style={styles.driverRatingText}>{ride.driver.rating.toFixed(1)}</Text></View>
             </View>
           ) : (
-            <View style={styles.searching} testID="ride-searching"><ActivityIndicator color={colors.primary} /><Text style={styles.searchingText}>Notifying nearby {vehicle} drivers… {ride.driver_eta_minutes != null ? `ETA ~${ride.driver_eta_minutes} min` : ""}</Text></View>
+            <View style={styles.searching} testID="ride-searching"><ActivityIndicator color={colors.primary} /><Text style={styles.searchingText}>Notifying nearby drivers… {ride.driver_eta_minutes != null ? `ETA ~${ride.driver_eta_minutes} min` : ""}</Text></View>
           )}
 
           {driverLocation ? (
             <View style={styles.statusLine}><Ionicons name="navigate" size={15} color={colors.primary} /><Text style={styles.statusLineText}>Driver position updated ({driverLocation.lat.toFixed(4)}, {driverLocation.lng.toFixed(4)})</Text></View>
           ) : null}
 
+          {ride.driver && !["requested", "completed", "cancelled"].includes(ride.status) ? (
+            <View style={styles.safetyRow}>
+              <TouchableOpacity style={[styles.safetyBtn, busy && { opacity: 0.7 }]} onPress={openChat} disabled={busy} testID="ride-chat">
+                <Ionicons name="chatbubble-ellipses" size={17} color={colors.primary} />
+                <Text style={styles.safetyBtnText}>Chat</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.safetyBtn, busy && { opacity: 0.7 }]} onPress={shareTrip} disabled={busy} testID="ride-share-trip">
+                <Ionicons name="share-social" size={17} color={colors.primary} />
+                <Text style={styles.safetyBtnText}>Share</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.sosBtn, busy && { opacity: 0.7 }]} onPress={sos} disabled={busy} testID="ride-sos">
+                <Ionicons name="warning" size={17} color="#fff" />
+                <Text style={styles.sosBtnText}>SOS</Text>
+              </TouchableOpacity>
+            </View>
+          ) : null}
+
           <View style={styles.fareCard}>
-            <Text style={styles.fareLabel}>{ride.vehicle_type === "car" ? "Car" : "Keke"} fare</Text>
+            <Text style={styles.fareLabel}>Car fare</Text>
             <Text style={styles.fareValue}>₦{ride.fare_estimate.toLocaleString()}</Text>
             <Text style={styles.fareMeta}>{ride.distance_km.toFixed(1)} km · {PAYMENT_LABELS[ride.payment_method ?? "cash"]}</Text>
           </View>
@@ -269,44 +414,75 @@ export default function RideScreen() {
   return (
     <SafeAreaView style={styles.root} edges={["top"]}>
       <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
-        <View style={styles.hero}><View style={styles.heroIcon}><Ionicons name="car" size={22} color="#fff" /></View><View style={{ flex: 1 }}><Text style={styles.title}>Book a ride</Text><Text style={styles.subtitle}>On-demand cars and keke rides.</Text></View></View>
+        <View style={styles.hero}><View style={styles.heroIcon}><Ionicons name="car" size={22} color="#fff" /></View><View style={{ flex: 1 }}><Text style={styles.title}>Book a ride</Text><Text style={styles.subtitle}>On-demand car rides.</Text></View></View>
 
-        <View style={styles.locations}>
-          <View style={styles.locationRow} testID="ride-pickup"><View style={styles.dotPickup} /><View style={{ flex: 1 }}><Text style={styles.locationLabel}>Pickup</Text><Text style={styles.locationValue}>{pickup ? `My location (${pickup.lat.toFixed(4)}, ${pickup.lng.toFixed(4)})` : "Locating you…"}</Text></View></View>
-          <View style={styles.dashLine} />
-          <View style={styles.locationRow} testID="ride-dropoff"><View style={styles.dotDropoff} /><View style={{ flex: 1 }}><Text style={styles.locationLabel}>Where to?</Text><Text style={styles.locationValue}>{dropoff ? dropoff.name : "Choose a destination below"}</Text></View></View>
+        <View style={styles.mapWrap}>
+          <BookingMap
+            pickup={pickup ? { lat: pickup.lat, lng: pickup.lng } : null}
+            dropoff={dropoff ? { lat: dropoff.lat, lng: dropoff.lng } : null}
+            onPickLocation={tapMap}
+            onUseMyLocation={getMyLocation}
+            locating={locating}
+            height={380}
+          />
+        </View>
+
+        <View style={styles.locSearch}>
+          <View style={styles.pickupRow}>
+            <PlaceAutocomplete
+              placeholder="Pickup location"
+              value={pickup}
+              onChange={setPickup}
+              testID="ride-pickup-input"
+              style={styles.pickupAutocomplete}
+            />
+            <TouchableOpacity style={styles.gpsBtn} onPress={getMyLocation} disabled={locating} testID="ride-gps-button">
+              {locating ? <ActivityIndicator size="small" color={colors.primary} /> : <Ionicons name="locate" size={20} color={colors.primary} />}
+            </TouchableOpacity>
+          </View>
+          <View style={styles.swapRow}>
+            <View style={styles.swapLine} />
+            <TouchableOpacity style={styles.swapBtn} onPress={swapPlaces} disabled={!pickup && !dropoff} testID="ride-swap">
+              <Ionicons name="swap-vertical" size={19} color={colors.primary} />
+            </TouchableOpacity>
+            <View style={styles.swapLine} />
+          </View>
+          <PlaceAutocomplete
+            placeholder="Where to? Search or tap the map"
+            value={dropoff}
+            onChange={setDropoff}
+            testID="ride-dropoff-input"
+          />
+          <Text style={styles.mapHint}><Ionicons name="finger-print" size={12} color={colors.textSecondary} /> Tip: search above or tap the map to drop a destination pin.</Text>
         </View>
 
         <Text style={styles.section}>Vehicle</Text>
         <View style={styles.vehicleRow}>
-          {(["car", "keke"] as VehicleType[]).map((v) => (
-            <TouchableOpacity key={v} onPress={() => setVehicle(v)} style={[styles.vehicleCard, vehicle === v && styles.vehicleCardActive]} testID={`ride-vehicle-${v}`}>
-              <Ionicons name={v === "car" ? "car" : "bicycle"} size={22} color={vehicle === v ? colors.primary : colors.textSecondary} />
-              <Text style={[styles.vehicleLabel, vehicle === v && styles.vehicleLabelActive]}>{v === "car" ? "Car" : "Keke"}</Text>
-            </TouchableOpacity>
-          ))}
-        </View>
-
-        <Text style={styles.section}>Destinations</Text>
-        <View style={styles.destList}>
-          {DESTINATIONS.map((d) => (
-            <TouchableOpacity key={d.name} onPress={() => setDropoff(d)} style={[styles.destCard, dropoff?.name === d.name && styles.destCardActive]} testID={`ride-dest-${d.name}`}>
-              <Ionicons name="location" size={17} color={dropoff?.name === d.name ? colors.primary : colors.textSecondary} />
-              <View style={{ flex: 1 }}><Text style={styles.destName}>{d.name}</Text><Text style={styles.destArea}>{d.area}</Text></View>
-              {dropoff?.name === d.name ? <Ionicons name="checkmark-circle" size={19} color={colors.primary} /> : null}
-            </TouchableOpacity>
-          ))}
+          <View style={[styles.vehicleCard, styles.vehicleCardActive]} testID="ride-vehicle-car">
+            <Ionicons name="car" size={22} color={colors.primary} />
+            <Text style={[styles.vehicleLabel, styles.vehicleLabelActive]}>Car</Text>
+          </View>
         </View>
 
         {banned ? (
           <View style={styles.bannedCard} testID="ride-zone-warning">
             <Ionicons name="alert-circle" size={17} color={colors.delayed} />
-            <Text style={styles.bannedText}>{estimate?.reason ?? "Keke is not allowed in this zone."} Choose a car instead.</Text>
+            <Text style={styles.bannedText}>{estimate?.reason ?? "Cars are not allowed in this zone."} Choose another option.</Text>
           </View>
         ) : estimate ? (
           <View style={styles.fareCard} testID="ride-estimate">
-            <Text style={styles.fareLabel}>{vehicle === "car" ? "Car" : "Keke"} estimate</Text>
-            <Text style={styles.fareValue}>₦{estimate.fare.toLocaleString()}</Text>
+            <Text style={styles.fareLabel}>Car estimate</Text>
+            {coupon && coupon.discount > 0 ? (
+              <>
+                <View style={styles.fareRow}>
+                  <Text style={[styles.fareValue, styles.fareStruck]}>₦{estimate.fare.toLocaleString()}</Text>
+                  <Text style={styles.fareDiscounted}>₦{coupon.fare_after.toLocaleString()}</Text>
+                </View>
+                <Text style={styles.couponAppliedText}>−₦{coupon.discount.toLocaleString()} with {coupon.code}</Text>
+              </>
+            ) : (
+              <Text style={styles.fareValue}>₦{estimate.fare.toLocaleString()}</Text>
+            )}
             <Text style={styles.fareMeta}>{estimate.distance_km.toFixed(1)} km · ~{estimate.eta_minutes} min</Text>
             <View style={styles.paymentRow}>
               {estimate.payment_methods.map((m) => (
@@ -318,10 +494,43 @@ export default function RideScreen() {
           <View style={styles.status}><ActivityIndicator size="small" color={colors.primary} /><Text style={styles.statusText}>Calculating fare…</Text></View>
         ) : null}
 
+        <Text style={styles.section}>Promo code</Text>
+        <View style={styles.couponCard}>
+          {coupon ? (
+            <View style={styles.couponAppliedRow}>
+              <Ionicons name="checkmark-circle" size={18} color={colors.primary} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.couponAppliedCode}>{coupon.code} applied</Text>
+                <Text style={styles.couponAppliedMeta}>You save ₦{coupon.discount.toLocaleString()} on this trip.</Text>
+              </View>
+              <TouchableOpacity onPress={clearCoupon} style={styles.couponRemove} testID="ride-coupon-remove"><Text style={styles.couponRemoveText}>Remove</Text></TouchableOpacity>
+            </View>
+          ) : (
+            <>
+              <View style={styles.couponInputRow}>
+                <Ionicons name="pricetag" size={17} color={colors.textSecondary} />
+                <TextInput
+                  style={styles.couponInput}
+                  placeholder="Enter promo code"
+                  placeholderTextColor={colors.textSecondary}
+                  autoCapitalize="characters"
+                  value={couponInput}
+                  onChangeText={setCouponInput}
+                  testID="ride-coupon-input"
+                />
+                <TouchableOpacity style={[styles.couponApplyBtn, (couponBusy || !couponInput.trim()) && { opacity: 0.5 }]} onPress={applyCoupon} disabled={couponBusy || !couponInput.trim()} testID="ride-coupon-apply">
+                  {couponBusy ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.couponApplyText}>Apply</Text>}
+                </TouchableOpacity>
+              </View>
+              {couponError ? <Text style={styles.couponErrorText}>{couponError}</Text> : null}
+            </>
+          )}
+        </View>
+
         {message ? <View style={styles.status}><Ionicons name="information-circle" size={16} color={colors.primary} /><Text style={styles.statusText}>{message}</Text></View> : null}
 
         <TouchableOpacity style={[styles.primaryButton, (busy || banned || !pickup || !dropoff) && { opacity: 0.5 }]} onPress={requestRide} disabled={busy || banned || !pickup || !dropoff} testID="ride-request-button">
-          {busy ? <ActivityIndicator color="#fff" /> : <><Ionicons name="navigate" size={18} color="#fff" /><Text style={styles.primaryText}>Request {vehicle === "car" ? "car" : "keke"}</Text></>}
+          {busy ? <ActivityIndicator color="#fff" /> : <><Ionicons name="navigate" size={18} color="#fff" /><Text style={styles.primaryText}>Request car</Text></>}
         </TouchableOpacity>
       </ScrollView>
     </SafeAreaView>
@@ -336,30 +545,42 @@ const styles = StyleSheet.create({
   title: { color: "#fff", fontSize: 22, fontWeight: "900" },
   subtitle: { color: "#D1FAE5", fontSize: 12, lineHeight: 17, marginTop: 3 },
   cancelText: { color: "#FECACA", fontSize: 14, fontWeight: "800", paddingVertical: 8, paddingLeft: 12 },
-  locations: { backgroundColor: colors.card, borderRadius: radii.lg, borderWidth: 1, borderColor: colors.border, padding: 14, marginTop: spacing.md },
-  locationRow: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 8 },
-  dashLine: { height: 16, borderLeftWidth: 1, borderStyle: "dashed", borderColor: colors.border, marginLeft: 5 },
-  dotPickup: { width: 11, height: 11, borderRadius: 6, backgroundColor: colors.primary },
-  dotDropoff: { width: 11, height: 11, borderRadius: 6, backgroundColor: colors.secondary },
-  locationLabel: { color: colors.textSecondary, fontSize: 11, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.4 },
-  locationValue: { color: colors.textPrimary, fontSize: 14, fontWeight: "700", marginTop: 2 },
+  mapWrap: { marginTop: spacing.md },
+  locSearch: { marginTop: spacing.md },
+  pickupRow: { flexDirection: "row", gap: 9, alignItems: "flex-start" },
+  pickupAutocomplete: { flex: 1, zIndex: 30 },
+  gpsBtn: { width: 48, height: 48, borderRadius: radii.md, borderWidth: 1, borderColor: colors.primary, backgroundColor: colors.card, alignItems: "center", justifyContent: "center" },
+  swapRow: { flexDirection: "row", alignItems: "center", marginVertical: 4 },
+  swapLine: { flex: 1, height: 1, backgroundColor: colors.border },
+  swapBtn: { width: 34, height: 30, borderRadius: radii.pill, borderWidth: 1, borderColor: colors.primary, backgroundColor: colors.card, alignItems: "center", justifyContent: "center", marginHorizontal: 10 },
+  mapHint: { flexDirection: "row", alignItems: "center", gap: 5, marginTop: 10, color: colors.textSecondary, fontSize: 11, fontWeight: "600" },
   section: { color: colors.textSecondary, fontSize: 12, fontWeight: "800", letterSpacing: 0.6, textTransform: "uppercase", marginTop: 22, marginBottom: 9 },
   vehicleRow: { flexDirection: "row", gap: 10 },
   vehicleCard: { flex: 1, minHeight: 74, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: radii.lg, alignItems: "center", justifyContent: "center", gap: 5 },
   vehicleCardActive: { borderColor: colors.primary, backgroundColor: colors.primaryLight },
   vehicleLabel: { color: colors.textSecondary, fontSize: 13, fontWeight: "800" },
   vehicleLabelActive: { color: colors.primary },
-  destList: { gap: 8 },
-  destCard: { flexDirection: "row", alignItems: "center", gap: 11, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: radii.md, padding: 13 },
-  destCardActive: { borderColor: colors.primary, backgroundColor: colors.primaryLight },
-  destName: { color: colors.textPrimary, fontSize: 14, fontWeight: "800" },
-  destArea: { color: colors.textSecondary, fontSize: 11, marginTop: 2 },
   bannedCard: { flexDirection: "row", gap: 9, padding: 13, borderRadius: radii.lg, marginTop: 18, backgroundColor: "#FEF2F2", alignItems: "center" },
   bannedText: { flex: 1, color: colors.delayed, fontSize: 12, fontWeight: "700", lineHeight: 17 },
   fareCard: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: radii.lg, padding: 16, marginTop: 18 },
   fareLabel: { color: colors.textSecondary, fontSize: 11, fontWeight: "800", textTransform: "uppercase", letterSpacing: 0.5 },
   fareValue: { color: colors.primaryDark, fontSize: 30, fontWeight: "900", marginTop: 4 },
+  fareStruck: { color: colors.textSecondary, textDecorationLine: "line-through", fontSize: 16, fontWeight: "700" },
+  fareRow: { flexDirection: "row", alignItems: "center", gap: 10, marginTop: 4 },
+  fareDiscounted: { color: colors.primaryDark, fontSize: 30, fontWeight: "900" },
+  couponAppliedText: { color: colors.primary, fontSize: 12, fontWeight: "800", marginTop: 2 },
   fareMeta: { color: colors.textSecondary, fontSize: 12, fontWeight: "600", marginTop: 3 },
+  couponCard: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: radii.lg, padding: 12 },
+  couponInputRow: { flexDirection: "row", alignItems: "center", gap: 9 },
+  couponInput: { flex: 1, minHeight: 44, color: colors.textPrimary, fontSize: 14, fontWeight: "700", textTransform: "uppercase" },
+  couponApplyBtn: { minWidth: 82, minHeight: 42, borderRadius: radii.pill, backgroundColor: colors.primary, alignItems: "center", justifyContent: "center" },
+  couponApplyText: { color: "#fff", fontSize: 13, fontWeight: "900" },
+  couponErrorText: { color: colors.delayed, fontSize: 12, fontWeight: "700", marginTop: 7 },
+  couponAppliedRow: { flexDirection: "row", alignItems: "center", gap: 10 },
+  couponAppliedCode: { color: colors.textPrimary, fontSize: 14, fontWeight: "900" },
+  couponAppliedMeta: { color: colors.textSecondary, fontSize: 12, fontWeight: "600", marginTop: 1 },
+  couponRemove: { paddingHorizontal: 10, paddingVertical: 6 },
+  couponRemoveText: { color: colors.delayed, fontSize: 12, fontWeight: "800" },
   paymentRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 14 },
   paymentChip: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: radii.pill, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.card },
   paymentChipActive: { borderColor: colors.primary, backgroundColor: colors.primaryLight },
@@ -378,7 +599,8 @@ const styles = StyleSheet.create({
   stepLabelActive: { color: colors.textPrimary },
   stepMeta: { marginLeft: "auto", color: colors.textSecondary, fontSize: 11, fontWeight: "600" },
   driverCard: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: radii.lg, padding: 14, marginTop: spacing.md },
-  driverAvatar: { width: 40, height: 40, borderRadius: 20, backgroundColor: colors.primary, alignItems: "center", justifyContent: "center" },
+  driverAvatar: { width: 44, height: 44, borderRadius: 22, backgroundColor: colors.primary, alignItems: "center", justifyContent: "center", overflow: "hidden" },
+  driverPhoto: { width: 44, height: 44, borderRadius: 22 },
   driverName: { color: colors.textPrimary, fontSize: 15, fontWeight: "900" },
   driverMeta: { color: colors.textSecondary, fontSize: 11, fontWeight: "600", marginTop: 2 },
   driverRating: { flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: colors.secondaryLight, borderRadius: radii.pill, paddingHorizontal: 10, paddingVertical: 5 },
@@ -387,5 +609,16 @@ const styles = StyleSheet.create({
   searchingText: { flex: 1, color: colors.textSecondary, fontSize: 12, fontWeight: "700", lineHeight: 17 },
   statusLine: { flexDirection: "row", gap: 8, padding: 12, borderRadius: radii.lg, marginTop: 12, backgroundColor: colors.primaryLight, alignItems: "center" },
   statusLineText: { flex: 1, color: colors.primaryDark, fontSize: 12, fontWeight: "700" },
+  safetyRow: { flexDirection: "row", gap: 10, marginTop: 12 },
+  safetyBtn: { flex: 1, minHeight: 48, borderRadius: radii.pill, borderWidth: 1, borderColor: colors.primary, backgroundColor: colors.card, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7 },
+  safetyBtnText: { color: colors.primary, fontSize: 13, fontWeight: "900" },
+  sosBtn: { flex: 1, minHeight: 48, borderRadius: radii.pill, backgroundColor: colors.delayed, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7 },
+  sosBtnText: { color: "#fff", fontSize: 13, fontWeight: "900" },
+  mapSpacer: { marginTop: spacing.md },
+  etaBanner: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: colors.primaryDark, borderRadius: radii.lg, padding: 14, marginTop: spacing.md },
+  etaIcon: { width: 34, height: 34, borderRadius: 17, backgroundColor: colors.primary, alignItems: "center", justifyContent: "center" },
+  etaTitle: { color: "#fff", fontSize: 14, fontWeight: "900" },
+  etaSub: { color: "#D1FAE5", fontSize: 11, fontWeight: "600", marginTop: 1 },
+  etaValue: { color: "#fff", fontSize: 20, fontWeight: "900" },
   ratingRow: { flexDirection: "row", gap: 18, justifyContent: "center", paddingVertical: 12 },
 });
