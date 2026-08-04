@@ -108,6 +108,8 @@ async def lifespan(app: FastAPI):
             "ALTER TABLE driver_profiles ADD COLUMN IF NOT EXISTS license_expiry DATE",
             "ALTER TABLE driver_profiles ADD COLUMN IF NOT EXISTS profile_photo VARCHAR(255)",
             "ALTER TABLE driver_profiles ADD COLUMN IF NOT EXISTS document_urls TEXT",
+            "ALTER TABLE driver_profiles ADD COLUMN IF NOT EXISTS liveness_status VARCHAR(20) DEFAULT 'none'",
+            "ALTER TABLE driver_profiles ADD COLUMN IF NOT EXISTS liveness_ref VARCHAR(100)",
             "ALTER TABLE driver_profiles ADD COLUMN IF NOT EXISTS verification_note VARCHAR(255)",
             "ALTER TABLE coupons ADD COLUMN IF NOT EXISTS audience VARCHAR(10) DEFAULT 'rider'",
             "ALTER TABLE coupons ADD COLUMN IF NOT EXISTS scope VARCHAR(20) DEFAULT 'ride'",

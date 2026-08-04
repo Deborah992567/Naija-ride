@@ -13,6 +13,18 @@ class VerificationSubmitReq(BaseModel):
     document_urls: List[str] = []
 
 
+class LivenessSubmitReq(BaseModel):
+    selfie_url: str
+    id_image_url: Optional[str] = None
+
+
+class LivenessOut(BaseModel):
+    status: str  # passed | failed
+    liveness_status: str
+    liveness_ref: Optional[str]
+    message: str
+
+
 class VerificationOut(BaseModel):
     user_id: str
     verification_status: str
@@ -23,6 +35,8 @@ class VerificationOut(BaseModel):
     license_expiry: Optional[date]
     profile_photo: Optional[str]
     document_urls: List[str]
+    liveness_status: str
+    liveness_ref: Optional[str]
 
 
 class VerificationReviewReq(BaseModel):
@@ -43,4 +57,6 @@ class AdminVerificationOut(BaseModel):
     license_number: Optional[str]
     license_expiry: Optional[date]
     document_urls: List[str]
+    liveness_status: str
+    liveness_ref: Optional[str]
     submitted_at: Optional[datetime]

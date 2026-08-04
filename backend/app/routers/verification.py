@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..config import DEV_MODE
+from ..config import AUTO_VERIFY_DRIVERS, DEV_MODE, VERIFICATION_REQUIRED_DOCS
 from ..core.deps import current_user, require_admin
 from ..core.realtime import ws_manager
 from ..db import get_db
@@ -14,13 +14,20 @@ from ..models.driver import DriverProfile
 from ..models.user import User
 from ..schemas.verification import (
     AdminVerificationOut,
+    LivenessOut,
+    LivenessSubmitReq,
     VerificationOut,
     VerificationReviewReq,
     VerificationSubmitReq,
 )
 from ..services.audit import log_audit
 from ..services.notifications import notify
-from ..services.verification import admin_verification_out, verification_out
+from ..services.verification import (
+    admin_verification_out,
+    is_application_complete,
+    run_liveness_check,
+    verification_out,
+)
 
 router = APIRouter(prefix="/api", tags=["verification"])
 
@@ -38,11 +45,56 @@ async def submit_verification(data: VerificationSubmitReq, user: User = Depends(
     profile.license_expiry = data.license_expiry
     profile.profile_photo = data.profile_photo
     profile.document_urls = json.dumps(data.document_urls) if data.document_urls else None
-    profile.verification_status = "pending"
     profile.verification_note = None
     profile.updated_at = datetime.now(timezone.utc)
+
+    if AUTO_VERIFY_DRIVERS and is_application_complete(profile, VERIFICATION_REQUIRED_DOCS):
+        profile.verification_status = "verified"
+        await log_audit(
+            db_sess,
+            actor_id=user.user_id,
+            action="verification.auto_verified",
+            entity_type="driver_profile",
+            entity_id=user.user_id,
+            meta={"liveness_ref": profile.liveness_ref},
+        )
+        await notify(
+            db_sess,
+            user.user_id,
+            "Driver verified",
+            "Your details and liveness check passed. You can now go online and start earning.",
+            category="system",
+            data={"verification_status": "verified"},
+        )
+        await ws_manager.send_to_driver(user.user_id, {"event": "verification.result", "verification_status": "verified"})
+    else:
+        profile.verification_status = "pending"
+
     await db_sess.commit()
     return verification_out(profile)
+
+
+@router.post("/drivers/verification/liveness", response_model=LivenessOut)
+async def submit_liveness(
+    data: LivenessSubmitReq,
+    user: User = Depends(current_user),
+    db_sess: AsyncSession = Depends(get_db),
+):
+    """Run face liveness on a live selfie and store the verdict on the profile."""
+    res = await db_sess.execute(select(DriverProfile).where(DriverProfile.user_id == user.user_id))
+    profile = res.scalar_one_or_none()
+    if not profile:
+        raise HTTPException(status_code=404, detail="Register as a driver first")
+
+    status, ref, message = run_liveness_check(data.selfie_url, data.id_image_url)
+    profile.liveness_status = status
+    profile.liveness_ref = ref
+    if status == "passed":
+        # The live selfie doubles as the driver's profile photo.
+        profile.profile_photo = data.selfie_url
+    profile.updated_at = datetime.now(timezone.utc)
+    await db_sess.commit()
+    return {"status": status, "liveness_status": status, "liveness_ref": ref, "message": message}
 
 
 @router.get("/drivers/verification", response_model=VerificationOut)

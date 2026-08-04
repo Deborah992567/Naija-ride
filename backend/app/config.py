@@ -77,6 +77,23 @@ JWT_TTL_DAYS = 7
 # (e.g. /auth/dev/make-admin) so they vanish once a real secret is set.
 DEV_MODE = JWT_SECRET == "transport-tracker-dev-secret-change-me-2026"
 
+# --- Driver verification ---------------------------------------------------
+# Auto-verify an application once every required field is present and the live
+# selfie passed liveness. Set AUTO_VERIFY_DRIVERS=0 to force manual admin
+# review of every submission instead.
+AUTO_VERIFY_DRIVERS = os.environ.get("AUTO_VERIFY_DRIVERS", "1") == "1"
+
+# Minimum number of uploaded ID/license documents required before auto-verify.
+VERIFICATION_REQUIRED_DOCS = int(os.environ.get("VERIFICATION_REQUIRED_DOCS", 1))
+
+# Face liveness provider: "dev" is an offline stub that auto-passes well-formed
+# selfies. Swap in a real provider (e.g. Prembly, SmileID, Passbase) via
+# LIVENESS_PROVIDER + credentials; secrets live in server env vars only.
+LIVENESS_PROVIDER = os.environ.get("LIVENESS_PROVIDER", "dev")
+LIVENESS_API_KEY = os.environ.get("LIVENESS_API_KEY", "")
+LIVENESS_API_SECRET = os.environ.get("LIVENESS_API_SECRET", "")
+LIVENESS_BASE_URL = os.environ.get("LIVENESS_BASE_URL", "")
+
 # Payment providers (secrets never shipped to the frontend)
 PAYSTACK_SECRET_KEY = os.environ.get("PAYSTACK_SECRET_KEY", "")
 

@@ -28,5 +28,8 @@ class DriverProfile(Base):
     license_expiry: Mapped[Optional[datetime]] = mapped_column(Date)
     profile_photo: Mapped[Optional[str]] = mapped_column(String(255))
     document_urls: Mapped[Optional[str]] = mapped_column(Text)  # JSON array of document URLs
+    # Face liveness (Stage: liveness). none | passed | failed
+    liveness_status: Mapped[str] = mapped_column(String(20), default="none")
+    liveness_ref: Mapped[Optional[str]] = mapped_column(String(100))  # provider result / dev ref
     verification_note: Mapped[Optional[str]] = mapped_column(String(255))
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
