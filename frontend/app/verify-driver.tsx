@@ -1,7 +1,7 @@
 // Driver verification: submit ID/license documents (uploaded via /api/upload).
 // Identity is confirmed with a live selfie + face liveness check (no photo uploads).
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Alert, Image, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
+import { ActivityIndicator, Alert, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { CameraView, useCameraPermissions } from "expo-camera";
@@ -99,15 +99,16 @@ export default function VerifyDriverScreen() {
     try {
       const uploaded = await api.uploadFile({
         uri: capturedUri,
-        name: `selfie_${Date.now()}.jpg`,
-        type: "image/jpeg",
+        name: `selfie_${Date.now()}.mp4`,
+        type: "video/mp4",
       });
-      setProfilePhoto(uploaded.url);
+      setProfilePhoto(null);
       setShowCamera(false);
       setCapturedUri(null);
       setCheckingLiveness(true);
-      const res = await api.submitDriverLiveness({ selfie_url: uploaded.url });
+      const res = await api.submitDriverLiveness({ video_url: uploaded.url });
       setLiveness(res);
+      if (res.selfie_url) setProfilePhoto(res.selfie_url);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not run the liveness check.");
     } finally {
@@ -229,13 +230,13 @@ export default function VerifyDriverScreen() {
                 {liveness?.status === "passed" ? <Ionicons name="checkmark-circle" size={22} color={colors.empty} /> : <Ionicons name="scan" size={22} color={colors.primary} />}
               </View>
               <View style={{ flex: 1 }}>
-                <Text style={styles.uploadTitle}>{liveness?.status === "passed" ? "Liveness passed" : "Take a live selfie"}</Text>
-                <Text style={styles.uploadMeta}>A live photo (not an uploaded one) confirms that this is really you</Text>
+                <Text style={styles.uploadTitle}>{liveness?.status === "passed" ? "Liveness passed" : "Record a live selfie"}</Text>
+                <Text style={styles.uploadMeta}>A short live clip (not a photo) proves this is really you</Text>
               </View>
               {checkingLiveness ? <ActivityIndicator color={colors.primary} /> : <Ionicons name="chevron-forward" size={18} color={colors.textSecondary} />}
             </TouchableOpacity>
             {liveness?.status === "failed" ? (
-              <View style={styles.livenessFail}><Ionicons name="alert-circle" size={16} color={colors.delayed} /><Text style={styles.livenessFailText}>{liveness.message || "Liveness check failed. Retake with a clear, well-lit photo of your face."}</Text></View>
+              <View style={styles.livenessFail}><Ionicons name="alert-circle" size={16} color={colors.delayed} /><Text style={styles.livenessFailText}>{liveness.message || "Liveness check failed. Retake with a clear, well-lit clip of your face."}</Text></View>
             ) : null}
 
             <TouchableOpacity style={[styles.submitBtn, (busy || uploading || checkingLiveness) && { opacity: 0.6 }]} onPress={submit} disabled={busy || uploading || checkingLiveness} testID="verify-submit">
@@ -270,29 +271,46 @@ function SelfieCameraModal({
   const cameraRef = useRef<CameraView | null>(null);
   const [permission, requestPermission] = useCameraPermissions();
   const [ready, setReady] = useState(false);
+  const [recording, setRecording] = useState(false);
 
-  const take = useCallback(async () => {
-    if (!cameraRef.current || !ready) return;
-    const photo = await cameraRef.current.takePictureAsync({ quality: 0.7 });
-    if (photo) onCaptured(photo.uri);
-  }, [cameraRef, ready, onCaptured]);
+  const record = useCallback(async () => {
+    if (!cameraRef.current || !ready || recording) return;
+    setRecording(true);
+    try {
+      // recordAsync resolves automatically when maxDuration (3s) is reached.
+      const video = await cameraRef.current.recordAsync({ maxDuration: 3 });
+      if (video?.uri) onCaptured(video.uri);
+    } catch {
+      // Recording failed (e.g. permission dropped); leave the modal open.
+    } finally {
+      setRecording(false);
+    }
+  }, [cameraRef, ready, recording, onCaptured]);
+
+  const cancel = useCallback(() => {
+    if (recording) cameraRef.current?.stopRecording();
+    onClose();
+  }, [recording, onClose]);
 
   return (
-    <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
+    <Modal visible={visible} animationType="slide" onRequestClose={cancel}>
       <View style={styles.cameraWrap}>
         {capturedUri ? (
-          <>
-            <Image source={{ uri: capturedUri }} style={styles.cameraPreview} />
+          <View style={styles.cameraPreview}>
+            <View style={styles.cameraVideoDone}>
+              <Ionicons name="videocam" size={48} color={colors.empty} />
+              <Text style={styles.cameraVideoDoneText}>Clip recorded</Text>
+            </View>
             <View style={styles.cameraActions}>
               <TouchableOpacity style={styles.retakeBtn} onPress={onRetake} disabled={uploading}>
                 <Ionicons name="refresh" size={20} color={colors.primary} />
                 <Text style={styles.retakeText}>Retake</Text>
               </TouchableOpacity>
               <TouchableOpacity style={[styles.confirmBtn, uploading && { opacity: 0.6 }]} onPress={onConfirm} disabled={uploading} testID="selfie-confirm">
-                {uploading ? <ActivityIndicator color="#fff" size="small" /> : <><Ionicons name="checkmark" size={18} color="#fff" /><Text style={styles.confirmText}>Use this photo</Text></>}
+                {uploading ? <ActivityIndicator color="#fff" size="small" /> : <><Ionicons name="checkmark" size={18} color="#fff" /><Text style={styles.confirmText}>Use this clip</Text></>}
               </TouchableOpacity>
             </View>
-          </>
+          </View>
         ) : (
           <>
             <CameraView
@@ -310,11 +328,14 @@ function SelfieCameraModal({
             ) : (
               <View style={styles.cameraOverlay}>
                 <View style={styles.cameraFrame} />
-                <Text style={styles.cameraHint}>Center your face in the frame</Text>
+                <View style={styles.cameraHintWrap}>
+                  <Text style={styles.cameraHint}>{recording ? "Recording... nod or turn your head slowly" : "Tap to record a 3-second clip"}</Text>
+                  {recording ? <View style={styles.recDot}><View style={styles.recDotInner} /></View> : null}
+                </View>
                 <View style={styles.cameraActions}>
-                  <TouchableOpacity style={styles.cancelBtn} onPress={onClose}><Text style={styles.cancelText}>Cancel</Text></TouchableOpacity>
-                  <TouchableOpacity style={styles.shutterBtn} onPress={take} testID="selfie-capture">
-                    <Ionicons name="camera" size={26} color="#fff" />
+                  <TouchableOpacity style={styles.cancelBtn} onPress={cancel}><Text style={styles.cancelText}>Cancel</Text></TouchableOpacity>
+                  <TouchableOpacity style={[styles.shutterBtn, recording && styles.shutterBtnActive]} onPress={record} disabled={recording} testID="selfie-capture">
+                    {recording ? <Ionicons name="stop" size={26} color="#fff" /> : <Ionicons name="videocam" size={24} color="#fff" />}
                   </TouchableOpacity>
                   <View style={{ width: 64 }} />
                 </View>
@@ -361,14 +382,20 @@ const styles = StyleSheet.create({
   submitBtn: { minHeight: 54, marginTop: 22, borderRadius: radii.pill, backgroundColor: colors.primary, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8 },
   submitText: { color: "#fff", fontSize: 14, fontWeight: "900" },
   cameraWrap: { flex: 1, backgroundColor: "#000" },
-  cameraPreview: { flex: 1, resizeMode: "cover" },
+  cameraPreview: { flex: 1, alignItems: "center", justifyContent: "center" },
+  cameraVideoDone: { alignItems: "center", gap: 12 },
+  cameraVideoDoneText: { color: "#fff", fontSize: 16, fontWeight: "800" },
   cameraPermOverlay: { flex: 1, alignItems: "center", justifyContent: "center", gap: 14, padding: 32 },
   cameraPermText: { color: "#fff", fontSize: 14, fontWeight: "700", textAlign: "center" },
   cameraOverlay: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "space-between", paddingVertical: 60 },
   cameraFrame: { width: 240, height: 240, borderRadius: 120, borderWidth: 3, borderColor: "#fff", backgroundColor: "rgba(255,255,255,0.08)" },
+  cameraHintWrap: { alignItems: "center", gap: 10 },
   cameraHint: { color: "#fff", fontSize: 13, fontWeight: "700", backgroundColor: "rgba(0,0,0,0.45)", paddingHorizontal: 14, paddingVertical: 8, borderRadius: radii.pill },
+  recDot: { width: 18, height: 18, borderRadius: 9, backgroundColor: "rgba(255,0,0,0.25)", alignItems: "center", justifyContent: "center" },
+  recDotInner: { width: 10, height: 10, borderRadius: 5, backgroundColor: "#ff3b30" },
   cameraActions: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 28, gap: 18 },
   shutterBtn: { width: 64, height: 64, borderRadius: 32, backgroundColor: colors.primary, alignItems: "center", justifyContent: "center", borderWidth: 3, borderColor: "#fff" },
+  shutterBtnActive: { backgroundColor: colors.delayed },
   cancelBtn: { paddingVertical: 10, paddingHorizontal: 16 },
   cancelText: { color: "#fff", fontSize: 14, fontWeight: "800" },
   retakeBtn: { flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 10, paddingHorizontal: 16 },

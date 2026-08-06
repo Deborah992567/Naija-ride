@@ -104,6 +104,33 @@ SMILEDID_POLL_TIMEOUT = int(os.environ.get("SMILEDID_POLL_TIMEOUT", 75))
 # Consent privacy-notice URL required by SmileID request contracts.
 PRIVACY_POLICY_URL = os.environ.get("PRIVACY_POLICY_URL", "https://naijamove.com/privacy")
 
+# --- In-house biometrics (face liveness + face match) ---------------------
+# Liveness and selfie-vs-ID-document face matching run on our own server with
+# ONNX models (OpenCV Zoo: YuNet for face detection, SFace for embeddings).
+# Only the government ID-number cross-check (NIN/BVN) is delegated to SmileID.
+# Models auto-download on first use into BIOMETRIC_MODELS_DIR.
+BIOMETRIC_MODELS_DIR = Path(os.environ.get("BIOMETRIC_MODELS_DIR", str(ROOT_DIR / "models")))
+BIOMETRIC_MODELS_URL = os.environ.get(
+    "BIOMETRIC_MODELS_URL", "https://github.com/opencv/opencv_zoo/raw/main/models"
+)
+
+# SFace cosine similarity required to call the selfie a match for the face on
+# the uploaded ID document (0..1; ~0.36 is the vendor-suggested verification
+# threshold, we bias a little stricter for ride safety).
+FACE_MATCH_MIN_SCORE = float(os.environ.get("FACE_MATCH_MIN_SCORE", 0.45))
+
+# Liveness video analysis thresholds (the selfie clip must show the driver's
+# face in most frames AND move naturally - rejects still photos and screens).
+LIVENESS_MIN_DURATION_SECONDS = float(os.environ.get("LIVENESS_MIN_DURATION_SECONDS", 1.2))
+LIVENESS_MIN_FACE_RATIO = float(os.environ.get("LIVENESS_MIN_FACE_RATIO", 0.8))
+LIVENESS_MIN_FACE_CONF = float(os.environ.get("LIVENESS_MIN_FACE_CONF", 0.5))
+LIVENESS_MIN_MOTION = float(os.environ.get("LIVENESS_MIN_MOTION", 0.02))
+LIVENESS_MAX_FRAMES = int(os.environ.get("LIVENESS_MAX_FRAMES", 16))
+
+# File storage shared by the upload router and the biometric engine.
+UPLOAD_DIR = ROOT_DIR / "uploads"
+MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", 15 * 1024 * 1024))
+
 # Payment providers (secrets never shipped to the frontend)
 PAYSTACK_SECRET_KEY = os.environ.get("PAYSTACK_SECRET_KEY", "")
 

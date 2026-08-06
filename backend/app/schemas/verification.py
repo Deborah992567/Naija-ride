@@ -14,8 +14,7 @@ class VerificationSubmitReq(BaseModel):
 
 
 class LivenessSubmitReq(BaseModel):
-    selfie_url: str
-    id_image_url: Optional[str] = None
+    video_url: str
 
 
 class LivenessOut(BaseModel):
@@ -23,6 +22,7 @@ class LivenessOut(BaseModel):
     liveness_status: str
     liveness_ref: Optional[str]
     message: str
+    selfie_url: Optional[str] = None
 
 
 class VerificationOut(BaseModel):

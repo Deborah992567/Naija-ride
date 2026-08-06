@@ -1,8 +1,8 @@
-"""Unit tests for the SmileID driver identity-check orchestrator.
+"""Unit tests for the SmileID NIN/BVN Enhanced KYC client.
 
-These test the orchestration logic (dev stub fallback, Enhanced KYC +
-SmartSelfie Compare gating, reference building) with the HTTP layer mocked.
-Run: pytest tests/test_smileid.py -q   (no backend server or credentials needed)
+The liveness/face-match orchestrator moved in-house to `services.biometric`;
+SmileID now only cross-checks government ID numbers. HTTP is mocked here.
+Run: pytest tests/test_smileid.py -q   (no server or credentials needed)
 """
 import asyncio
 import sys
@@ -10,123 +10,219 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.models.driver import DriverProfile
 from app.models.user import User
 from app.services import smileid
 
-
-def make_profile(**overrides) -> DriverProfile:
-    base = {
-        "user_id": "u_test1234",
-        "id_type": "nin",
-        "id_number": "12345678901",
-        "license_number": "NG-12345",
-        "document_urls": '["/uploads/id_photo.jpg"]',
-    }
-    base.update(overrides)
-    return DriverProfile(**base)
+USER = User(user_id="u_test1234", name="John Doe", email="john@example.com")
 
 
-def make_user() -> User:
-    return User(user_id="u_test1234", name="John Doe", email="john@example.com")
+def _patch_token(monkeypatch, token="tok_abc"):
+    async def fake_get_token():
+        return token
+
+    monkeypatch.setattr(smileid, "get_token", fake_get_token)
 
 
-def test_dev_stub_passes_when_not_configured(monkeypatch):
-    monkeypatch.setattr(smileid, "_configured", lambda: False)
-    status, ref, message = asyncio.run(smileid.run_driver_identity_check(make_profile(), make_user(), "/uploads/selfie.jpg"))
-    assert status == "passed"
-    assert ref.startswith("liveness_")
+def test_token_is_cached_and_refreshed(monkeypatch):
+    monkeypatch.setattr(smileid, "_token_cache", {"token": None, "expires_at": 0.0})
+    hits = {"n": 0}
+
+    class FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, headers=None, data=None, files=None):
+            hits["n"] += 1
+
+            class Resp:
+                status_code = 200
+
+                def raise_for_status(self):
+                    return None
+
+                def json(self):
+                    return {"token": f"tok_{hits['n']}"}
+
+            return Resp()
+
+    monkeypatch.setattr(smileid.httpx, "AsyncClient", FakeClient)
+    first = asyncio.run(smileid.get_token())
+    second = asyncio.run(smileid.get_token())
+    assert first == "tok_1" and second == "tok_1"  # cached: no second HTTP call
+    assert hits["n"] == 1
 
 
-def test_dev_stub_rejects_missing_selfie(monkeypatch):
-    monkeypatch.setattr(smileid, "_configured", lambda: False)
-    status, ref, message = asyncio.run(smileid.run_driver_identity_check(make_profile(), make_user(), ""))
-    assert status == "failed"
+def test_submit_enhanced_kyc_builds_fields_and_returns_job_id(monkeypatch):
+    _patch_token(monkeypatch)
+    captured = {}
+
+    class FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, headers=None, data=None, files=None):
+            captured["url"] = url
+            captured["headers"] = headers
+            captured["data"] = data
+
+            class Resp:
+                status_code = 200
+
+                def raise_for_status(self):
+                    return None
+
+                def json(self):
+                    return {"job_id": "job_kyc999"}
+
+            return Resp()
+
+    monkeypatch.setattr(smileid.httpx, "AsyncClient", FakeClient)
+    job = asyncio.run(smileid.submit_enhanced_kyc(USER, "NIN_V2", "12345678901"))
+    assert job == "job_kyc999"
+    assert captured["url"].endswith("/v3/enhanced_kyc")
+    assert captured["headers"]["SmileID-Token"] == "tok_abc"
+    import json
+
+    params = json.loads(captured["data"]["partner_params"])
+    assert params["job_type"] == "5"
 
 
-def test_requires_id_document_before_provider_check(monkeypatch):
-    monkeypatch.setattr(smileid, "_configured", lambda: True)
-    profile = make_profile(document_urls=None)
-    status, ref, message = asyncio.run(smileid.run_driver_identity_check(profile, make_user(), "/uploads/selfie.jpg"))
-    assert status == "failed"
-    assert "Upload your ID document first" in message
+def test_enhanced_kyc_raises_when_no_job_id(monkeypatch):
+    _patch_token(monkeypatch)
+
+    class FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, headers=None, data=None, files=None):
+            class Resp:
+                status_code = 200
+
+                def raise_for_status(self):
+                    return None
+
+                def json(self):
+                    return {"result": "no job"}
+
+            return Resp()
+
+    monkeypatch.setattr(smileid.httpx, "AsyncClient", FakeClient)
+    try:
+        asyncio.run(smileid.submit_enhanced_kyc(USER, "NIN_V2", "123"))
+        assert False, "expected RuntimeError"
+    except RuntimeError as exc:
+        assert "job_id" in str(exc)
 
 
-def test_passes_when_kyc_and_compare_clear(monkeypatch):
-    monkeypatch.setattr(smileid, "_configured", lambda: True)
-    monkeypatch.setattr(smileid, "_read_image", lambda url: b"\xff\xd8\xff" + url.encode())
+def test_poll_returns_terminal_verdict(monkeypatch):
+    _patch_token(monkeypatch)
 
-    async def fake_kyc(user, id_type, id_number):
-        return "job_kyc123"
+    class FakeClient:
+        def __init__(self, *a, **k):
+            pass
 
-    async def fake_compare(user, selfie, compare):
-        return "job_ssc456"
+        async def __aenter__(self):
+            return self
 
-    async def fake_poll(job_id):
-        return ("clear", "OK")
+        async def __aexit__(self, *a):
+            return False
 
-    monkeypatch.setattr(smileid, "submit_enhanced_kyc", fake_kyc)
-    monkeypatch.setattr(smileid, "submit_smart_selfie_compare", fake_compare)
-    monkeypatch.setattr(smileid, "poll_status", fake_poll)
+        async def get(self, url, headers=None):
+            class Resp:
+                status_code = 200
 
-    status, ref, message = asyncio.run(smileid.run_driver_identity_check(make_profile(), make_user(), "/uploads/selfie.jpg"))
-    assert status == "passed"
-    assert "kyc:job_kyc123:clear" in ref
-    assert "compare:job_ssc456:clear" in ref
+                def json(self):
+                    return {"status": "clear", "message": "Verified"}
 
+            return Resp()
 
-def test_fails_when_id_number_not_confirmed(monkeypatch):
-    monkeypatch.setattr(smileid, "_configured", lambda: True)
-    monkeypatch.setattr(smileid, "_read_image", lambda url: b"img")
-
-    async def fake_kyc(user, id_type, id_number):
-        return "job_kyc123"
-
-    async def fake_compare(user, selfie, compare):
-        return "job_ssc456"
-
-    async def fake_poll(job_id):
-        return ("block", "no match")
-
-    monkeypatch.setattr(smileid, "submit_enhanced_kyc", fake_kyc)
-    monkeypatch.setattr(smileid, "submit_smart_selfie_compare", fake_compare)
-    monkeypatch.setattr(smileid, "poll_status", fake_poll)
-
-    status, ref, message = asyncio.run(smileid.run_driver_identity_check(make_profile(), make_user(), "/uploads/selfie.jpg"))
-    assert status == "failed"
-    assert "could not be confirmed" in message
+    monkeypatch.setattr(smileid.httpx, "AsyncClient", FakeClient)
+    status, message = asyncio.run(smileid.poll_status("job_x", timeout=2))
+    assert status == "clear"
 
 
-def test_skips_kyc_for_unsupported_id_type(monkeypatch):
-    monkeypatch.setattr(smileid, "_configured", lambda: True)
-    monkeypatch.setattr(smileid, "_read_image", lambda url: b"img")
-    submitted = []
+def test_poll_waits_on_202_then_returns_terminal(monkeypatch):
+    _patch_token(monkeypatch)
+    calls = {"n": 0}
 
-    async def fake_compare(user, selfie, compare):
-        submitted.append(1)
-        return "job_ssc789"
+    class FakeClient:
+        def __init__(self, *a, **k):
+            pass
 
-    async def fake_poll(job_id):
-        return ("clear", "OK")
+        async def __aenter__(self):
+            return self
 
-    monkeypatch.setattr(smileid, "submit_smart_selfie_compare", fake_compare)
-    monkeypatch.setattr(smileid, "poll_status", fake_poll)
+        async def __aexit__(self, *a):
+            return False
 
-    profile = make_profile(id_type="driver_license", id_number=None)
-    status, ref, message = asyncio.run(smileid.run_driver_identity_check(profile, make_user(), "/uploads/selfie.jpg"))
-    assert status == "passed"
-    assert len(submitted) == 1
-    assert "kyc:" not in ref
+        async def get(self, url, headers=None):
+            calls["n"] += 1
+
+            class Resp:
+                status_code = 202 if calls["n"] == 1 else 200
+                ok = True
+
+                def json(self):
+                    return {"status": "processing"} if calls["n"] == 1 else {"status": "block", "message": "Rejected"}
+
+            return Resp()
+
+    monkeypatch.setattr(smileid.httpx, "AsyncClient", FakeClient)
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(smileid.asyncio, "sleep", no_sleep)
+    status, message = asyncio.run(smileid.poll_status("job_y", timeout=2))
+    assert status == "block"
+    assert calls["n"] == 2
 
 
-def test_provider_failure_is_fail_closed(monkeypatch):
-    monkeypatch.setattr(smileid, "_configured", lambda: True)
-    monkeypatch.setattr(smileid, "_read_image", lambda url: b"img")
+def test_poll_404_is_block(monkeypatch):
+    _patch_token(monkeypatch)
 
-    async def boom(user, id_type, id_number):
-        raise RuntimeError("upstream down")
+    class FakeClient:
+        def __init__(self, *a, **k):
+            pass
 
-    monkeypatch.setattr(smileid, "submit_enhanced_kyc", boom)
-    status, ref, message = asyncio.run(smileid.run_driver_identity_check(make_profile(), make_user(), "/uploads/selfie.jpg"))
-    assert status == "failed"
-    assert "temporarily unavailable" in message
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url, headers=None):
+            class Resp:
+                status_code = 404
+
+            return Resp()
+
+    monkeypatch.setattr(smileid.httpx, "AsyncClient", FakeClient)
+    status, _ = asyncio.run(smileid.poll_status("job_z", timeout=2))
+    assert status == "block"
+
+
+def test_configured_gates_on_credentials(monkeypatch):
+    monkeypatch.setattr(smileid, "SMILEDID_PARTNER_ID", "pid")
+    monkeypatch.setattr(smileid, "SMILEDID_API_KEY", "")
+    assert smileid._configured() is False
+    monkeypatch.setattr(smileid, "SMILEDID_API_KEY", "key")
+    assert smileid._configured() is True

@@ -87,3 +87,7 @@ backend/uploads/
 # =====================
 .vercel/
 .cache/
+# =====================
+# Machine-learning model weights (auto-downloaded, never committed)
+# =====================
+backend/models/

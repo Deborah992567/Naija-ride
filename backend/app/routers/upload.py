@@ -1,4 +1,4 @@
-"""Secure file uploads (driver documents, profile photos, moving item photos).
+"""Secure file uploads (driver documents, profile photos, liveness clips).
 
 Files are validated by extension + content sniffing and stored under
 `uploads/`, served back at `/uploads/<filename>`.
@@ -9,23 +9,24 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
 
-from ..config import ROOT_DIR
+from ..config import MAX_UPLOAD_BYTES, UPLOAD_DIR
 from ..core.deps import current_user
 from ..models.user import User
 
 router = APIRouter(prefix="/api", tags=["upload"])
 
-UPLOAD_DIR = ROOT_DIR / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".pdf"}
+ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".pdf", ".mp4", ".mov", ".webm"}
 ALLOWED_CONTENT = {
     "image/jpeg": ".jpg",
     "image/png": ".png",
     "image/webp": ".webp",
     "application/pdf": ".pdf",
+    "video/mp4": ".mp4",
+    "video/quicktime": ".mov",
+    "video/webm": ".webm",
 }
-MAX_BYTES = 5 * 1024 * 1024  # 5 MB
 
 
 def _sniff_magic(data: bytes) -> Optional[str]:
@@ -38,6 +39,12 @@ def _sniff_magic(data: bytes) -> Optional[str]:
         return ".webp"
     if data.startswith(b"%PDF-"):
         return ".pdf"
+    if len(data) >= 12 and data[4:8] == b"ftyp":
+        return ".mp4"
+    if data.startswith(b"\x1aE\xdf\xa3"):
+        return ".webm"
+    if data.startswith(b"OggS"):
+        return ".webm"
     return None
 
 
@@ -52,13 +59,13 @@ async def upload_file(
         # Fall back to extension check for clients that don't set content type.
         ext = Path(file.filename or "").suffix.lower()
         if ext not in ALLOWED_EXTENSIONS:
-            raise HTTPException(status_code=400, detail="Unsupported file type (jpg, png, webp, pdf only)")
-    if file.size is not None and file.size > MAX_BYTES:
-        raise HTTPException(status_code=400, detail="File too large (max 5 MB)")
+            raise HTTPException(status_code=400, detail="Unsupported file type (jpg, png, webp, pdf, mp4)")
+    if file.size is not None and file.size > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=400, detail=f"File too large (max {MAX_UPLOAD_BYTES // (1024 * 1024)} MB)")
 
     data = await file.read()
-    if len(data) > MAX_BYTES:
-        raise HTTPException(status_code=400, detail="File too large (max 5 MB)")
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=400, detail=f"File too large (max {MAX_UPLOAD_BYTES // (1024 * 1024)} MB)")
 
     # Content sniffing: trust the file's magic bytes over its claimed type.
     sniffed = _sniff_magic(data)

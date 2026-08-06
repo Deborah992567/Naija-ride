@@ -21,8 +21,8 @@ from ..schemas.verification import (
     VerificationSubmitReq,
 )
 from ..services.audit import log_audit
+from ..services.biometric import run_driver_identity_check
 from ..services.notifications import notify
-from ..services.smileid import run_driver_identity_check
 from ..services.verification import admin_verification_out, is_application_complete, verification_out
 
 router = APIRouter(prefix="/api", tags=["verification"])
@@ -76,21 +76,20 @@ async def submit_liveness(
     user: User = Depends(current_user),
     db_sess: AsyncSession = Depends(get_db),
 ):
-    """Run face liveness on a live selfie and store the verdict on the profile."""
+    """Run face liveness + face match on a live selfie clip and store the verdict."""
     res = await db_sess.execute(select(DriverProfile).where(DriverProfile.user_id == user.user_id))
     profile = res.scalar_one_or_none()
     if not profile:
         raise HTTPException(status_code=404, detail="Register as a driver first")
 
-    status, ref, message = await run_driver_identity_check(profile, user, data.selfie_url)
+    status, ref, message, selfie_url = await run_driver_identity_check(profile, user, data.video_url)
     profile.liveness_status = status
     profile.liveness_ref = ref
-    if status == "passed":
-        # The live selfie doubles as the driver's profile photo.
-        profile.profile_photo = data.selfie_url
+    if status == "passed" and selfie_url:
+        profile.profile_photo = selfie_url
     profile.updated_at = datetime.now(timezone.utc)
     await db_sess.commit()
-    return {"status": status, "liveness_status": status, "liveness_ref": ref, "message": message}
+    return {"status": status, "liveness_status": status, "liveness_ref": ref, "message": message, "selfie_url": selfie_url}
 
 
 @router.get("/drivers/verification", response_model=VerificationOut)
