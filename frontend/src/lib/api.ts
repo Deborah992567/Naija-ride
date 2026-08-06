@@ -27,6 +27,13 @@ const BASE_URL = resolveBackendUrl();
 export const API = `${BASE_URL}/api`;
 const TOKEN_KEY = "tt_token";
 
+// Resolve server-relative asset URLs (e.g. "/uploads/selfie.jpg") for <Image>.
+export function assetUrl(path: string | null | undefined): string | null {
+  if (!path) return null;
+  if (/^https?:\/\//.test(path)) return path;
+  return `${BASE_URL}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
 export type User = {
   user_id: string;
   email: string;
@@ -562,8 +569,10 @@ export const api = {
     profile_photo?: string | null;
     document_urls?: string[];
   }) => request<DriverVerification>("/drivers/verification", { method: "POST", body: JSON.stringify(body) }, true),
-  submitDriverLiveness: (body: { video_url: string }) =>
+  submitDriverLiveness: (body: { video_url: string; challenge_id?: string }) =>
     request<LivenessResult>("/drivers/verification/liveness", { method: "POST", body: JSON.stringify(body) }, true),
+  issueLivenessChallenge: () =>
+    request<LivenessChallenge>("/drivers/verification/liveness/challenge", { method: "POST", body: "{}" }, true),
 };
 
 export type AdminVerification = {
@@ -578,6 +587,7 @@ export type AdminVerification = {
   id_number: string | null;
   license_number: string | null;
   license_expiry: string | null;
+  profile_photo: string | null;
   document_urls: string[];
   liveness_status: string;
   liveness_ref: string | null;
@@ -947,6 +957,17 @@ export type DriverVerification = {
   document_urls: string[];
   liveness_status: string;
   liveness_ref: string | null;
+};
+
+export type LivenessChallengeStep = {
+  instruction: string;
+  seconds: number;
+};
+
+export type LivenessChallenge = {
+  challenge_id: string;
+  steps: LivenessChallengeStep[];
+  total_seconds: number;
 };
 
 export type LivenessResult = {

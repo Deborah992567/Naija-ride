@@ -127,6 +127,21 @@ LIVENESS_MIN_FACE_CONF = float(os.environ.get("LIVENESS_MIN_FACE_CONF", 0.5))
 LIVENESS_MIN_MOTION = float(os.environ.get("LIVENESS_MIN_MOTION", 0.02))
 LIVENESS_MAX_FRAMES = int(os.environ.get("LIVENESS_MAX_FRAMES", 16))
 
+# Challenge-response liveness: the app shows random head-shake / nod / hold-still
+# instructions and the server verifies the driver actually performed them in
+# order. A random sequence defeats video-replay attacks (the attacker can't have
+# footage of the target performing this exact unknown sequence).
+# Head-pose features are normalized by image width/height; a clear look/nod
+# moves the nose ~0.08-0.15 units, while true stillness stays below ~0.05-0.08.
+LIVENESS_CHALLENGE_STEP_SECONDS = float(os.environ.get("LIVENESS_CHALLENGE_STEP_SECONDS", 1.5))
+LIVENESS_CHALLENGE_LEAD_SECONDS = float(os.environ.get("LIVENESS_CHALLENGE_LEAD_SECONDS", 0.8))
+# Min normalized landmark swing that counts as performing the instructed movement.
+LIVENESS_CHALLENGE_MIN_DEVIATION = float(os.environ.get("LIVENESS_CHALLENGE_MIN_DEVIATION", 0.08))
+# Max normalized landmark swing allowed while told to hold still.
+LIVENESS_CHALLENGE_STILL_MAX = float(os.environ.get("LIVENESS_CHALLENGE_STILL_MAX", 0.12))
+# How long an issued challenge stays valid (seconds) before the driver must retry.
+LIVENESS_CHALLENGE_TTL_SECONDS = float(os.environ.get("LIVENESS_CHALLENGE_TTL_SECONDS", 300))
+
 # File storage shared by the upload router and the biometric engine.
 UPLOAD_DIR = ROOT_DIR / "uploads"
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", 15 * 1024 * 1024))

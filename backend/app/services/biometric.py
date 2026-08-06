@@ -14,10 +14,11 @@ The only external step left is the government ID-number cross-check (NIN/BVN),
 which is delegated to SmileID from the `smileid` module because only licensed
 intermediaries may query those databases.
 """
-import asyncio
 import json
 import logging
+import random
 import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -29,6 +30,11 @@ from ..config import (
     BIOMETRIC_MODELS_DIR,
     BIOMETRIC_MODELS_URL,
     FACE_MATCH_MIN_SCORE,
+    LIVENESS_CHALLENGE_LEAD_SECONDS,
+    LIVENESS_CHALLENGE_MIN_DEVIATION,
+    LIVENESS_CHALLENGE_STEP_SECONDS,
+    LIVENESS_CHALLENGE_STILL_MAX,
+    LIVENESS_CHALLENGE_TTL_SECONDS,
     LIVENESS_MAX_FRAMES,
     LIVENESS_MIN_DURATION_SECONDS,
     LIVENESS_MIN_FACE_CONF,
@@ -123,6 +129,72 @@ def ensure_models() -> bool:
         return True
 
 
+# --- Challenge-response liveness store ----------------------------------------
+# A challenge is a short random instruction sequence (e.g. look left -> nod ->
+# hold still). The instructions are shown while the app records, so the driver
+# cannot pre-record a clip that satisfies a challenge they only learn about
+# after clicking "Start". The clip is verified segment-by-segment server-side.
+#
+# Each challenge carries a TTL so a leaked clip cannot be replayed later.
+CHALLENGE_STEPS = ("look_left", "look_right", "nod", "still")
+CHALLENGE_STORE: dict[str, dict] = {}
+_CHALLENGE_LOCK = threading.Lock()
+
+
+def _expire_challenges(now: float = None) -> None:
+    now = now if now is not None else time.time()
+    expired = [cid for cid, ch in CHALLENGE_STORE.items() if ch["expires_at"] < now]
+    for cid in expired:
+        CHALLENGE_STORE.pop(cid, None)
+
+
+def _new_step() -> tuple[str, float]:
+    """Pick a random instruction and its intended action window (seconds)."""
+    step = random.choice(CHALLENGE_STEPS)
+    window = LIVENESS_CHALLENGE_STEP_SECONDS + LIVENESS_CHALLENGE_LEAD_SECONDS
+    return step, window
+
+
+def _new_challenge() -> dict:
+    """Build a random 3-step sequence with non-adjacent identical steps."""
+    sequence = []
+    while len(sequence) < 3:
+        step, window = _new_step()
+        if not sequence or step != sequence[-1][0]:
+            sequence.append((step, window))
+    total = round(sum(w for _, w in sequence), 2)
+    return {
+        "sequence": sequence,
+        "total": total,
+        "created_at": time.time(),
+        "expires_at": time.time() + LIVENESS_CHALLENGE_TTL_SECONDS,
+    }
+
+
+def create_challenge() -> tuple[str, dict]:
+    """Issue a fresh challenge and return (challenge_id, public challenge)."""
+    _expire_challenges()
+    challenge_id = uuid.uuid4().hex
+    with _CHALLENGE_LOCK:
+        challenge = _new_challenge()
+        CHALLENGE_STORE[challenge_id] = challenge
+    public = {
+        "steps": [
+            {"instruction": step, "seconds": round(window, 2)}
+            for step, window in challenge["sequence"]
+        ],
+        "total_seconds": challenge["total"],
+    }
+    return challenge_id, public
+
+
+def consume_challenge(challenge_id: str) -> Optional[dict]:
+    """Return and consume the stored challenge, or None if unknown/expired."""
+    _expire_challenges()
+    with _CHALLENGE_LOCK:
+        return CHALLENGE_STORE.pop(challenge_id, None)
+
+
 # --- Path / URL helpers ------------------------------------------------------
 def _url_to_path(url: str) -> Optional[Path]:
     """Map an uploaded /uploads/<name> URL to its local file path."""
@@ -172,6 +244,26 @@ def _aligned_face(image: np.ndarray, face: np.ndarray) -> Optional[np.ndarray]:
     return cv2.cvtColor(aligned, cv2.COLOR_BGR2RGB)
 
 
+def _head_features(width: int, height: int, face: np.ndarray) -> Optional[np.ndarray]:
+    """Normalized head-pose features: (x, y, scale) of the face, plus the
+    (nose - eyes-midpoint) vector. The last two components dominate when the
+    head turns left/right; x/scale move when the head nods up/down.
+    """
+    if height < 2 or width < 2:
+        return None
+    face = np.asarray(face, dtype=np.float64)
+    x, y, bw, bh = face[:4]
+    cx = (x + bw / 2) / width
+    cy = (y + bh / 2) / height
+    scale = (bw * bh) / (width * height)
+    lm = face[4:14].reshape(5, 2)
+    eyes_mid = ((lm[0, 0] + lm[1, 0]) / 2, (lm[0, 1] + lm[1, 1]) / 2)
+    nose = lm[2]
+    dx = (nose[0] - eyes_mid[0]) / width
+    dy = (nose[1] - eyes_mid[1]) / height
+    return np.float32([cx, cy, scale, dx, dy])
+
+
 def face_embedding(image: np.ndarray, face: Optional[np.ndarray] = None) -> Optional[np.ndarray]:
     """Return the L2-normalized 128-d SFace embedding for the best face, or None."""
     if not _models_ready:
@@ -206,17 +298,17 @@ def _embed_from_path(path: Path) -> Optional[np.ndarray]:
 
 
 # --- Liveness video analysis ---------------------------------------------------
-def _liveness_from_frames(
-    frame_count: int, width: int, height: int, detections: list
-) -> tuple[bool, float, str]:
+def _liveness_from_frames(detections: list, width: int, height: int) -> tuple[bool, float, str]:
     """Score a clip from per-frame face detections.
 
-    `detections` holds one entry per sampled frame: a row [x,y,w,h,...,score]
-    or None when no face was found. A pass requires the face to be visible in
-    most frames and to move between frames (still photos / screens fail).
+    `detections` holds one entry per sampled frame: a dict with a face row
+    [x,y,w,h,...,score] or None when no face was found. A pass requires the
+    face to be visible in most frames and to move between frames (still
+    photos / screens fail).
     """
-    present = [d for d in detections if d is not None and d[-1] >= LIVENESS_MIN_FACE_CONF]
-    if len(detections) and len(present) / len(detections) < LIVENESS_MIN_FACE_RATIO:
+    faces = [sample["face"] for sample in detections]
+    present = [d for d in faces if d is not None and d[-1] >= LIVENESS_MIN_FACE_CONF]
+    if len(faces) and len(present) / len(faces) < LIVENESS_MIN_FACE_RATIO:
         return False, 0.0, "Your face was not visible in most of the clip. Retake in good light."
     if len(present) < 2:
         return False, 0.0, "Your face was not visible in most of the clip. Retake in good light."
@@ -232,68 +324,142 @@ def _liveness_from_frames(
     return True, motion, ""
 
 
-def _analyze_liveness(video_path: Path) -> tuple[bool, float, float, list]:
-    """Sample frames from a clip and return (passed, motion, duration, detections)."""
-    if not _models_ready:
-        return False, 0.0, 0.0, []
+def _sample_video(video_path: Path) -> tuple[list, float, int, int, float]:
+    """Read a clip once and return (detections, fps, width, height, duration).
+
+    Every sampled frame carries both the detection row and its source frame
+    index, so challenge segments and the best-frame selection can be computed
+    without a second pass through the file. A missing/unreadable file yields
+    empty detections.
+    """
+    detections: list = []
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         cap.release()
-        return False, 0.0, 0.0, []
+        return [], 0.0, 0, 0, 0.0
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     duration = total / fps if fps > 0 else 0.0
-
-    detections: list = []
     width = height = 0
     idx = 0
+    step = max(total // LIVENESS_MAX_FRAMES, 1) if total > LIVENESS_MAX_FRAMES else 1
     while True:
         ok, frame = cap.read()
         if not ok:
             break
         idx += 1
-        if total > LIVENESS_MAX_FRAMES and idx % max(total // LIVENESS_MAX_FRAMES, 1) != 0:
+        if idx % step != 0:
             continue
         h, w = frame.shape[:2]
         width, height = w, h
-        detections.append(_detect_face(frame))
+        detections.append({"frame": idx - 1, "face": _detect_face(frame)})
     cap.release()
-
-    passed, motion, message = _liveness_from_frames(len(detections), width, height, detections)
-    if not passed:
-        return False, motion, duration, detections
-    if duration < LIVENESS_MIN_DURATION_SECONDS:
-        return False, motion, duration, detections
-    return True, motion, duration, detections
+    return detections, fps, width, height, duration
 
 
-def _best_frame_bytes(video_path: Path, detections: list) -> Optional[tuple[bytes, np.ndarray]]:
+def _look_deviation(feats: list[np.ndarray]) -> float:
+    """Signed nose excursion within a segment.
+
+    Negative means the head turned LEFT (nose moved left), positive means RIGHT.
+    The magnitude is the largest deviation from the segment mean, the sign comes
+    from the direction of travel.
+    """
+    if not feats:
+        return 0.0
+    dx = np.array([f[3] for f in feats])
+    net = float(dx[-1] - dx[0])
+    mag = float(np.max(np.abs(dx - dx.mean())))
+    return mag * (1.0 if net >= 0 else -1.0)
+
+
+def _still_max_deviation(feats: list[np.ndarray]) -> float:
+    """Largest combined (x, y, scale) deviation within a segment."""
+    if not feats:
+        return float("inf")
+    arr = np.array(feats)
+    return float(np.max(np.sqrt(((arr[:, :3] - arr[:, :3].mean(0)) ** 2).sum(1))))
+
+
+def analyze_challenge(
+    detections: list,
+    width: int,
+    height: int,
+    duration: float,
+    challenge: dict,
+) -> tuple[bool, float, str]:
+    """Verify a clip against a challenge sequence, segment by segment.
+
+    `detections` must be the list of {"frame", "face"} samples produced by
+    `_sample_video`. Every intended instruction window is checked against the
+    frames that fall inside it:
+
+      * look_left  -> the nose must shift clearly left of its segment mean.
+      * look_right -> the nose must shift clearly right of its segment mean.
+      * nod        -> the head must move up/down (x/scale change).
+      * still      -> the head must not drift beyond LIVENESS_CHALLENGE_STILL_MAX.
+
+    After the instructions pass, the standard motion + face-presence gate runs
+    so a static recording can never slip through. Returns (passed, motion, msg).
+    """
+    sampled_fps = max(len(detections) / duration, 1e-6) if duration > 0 else 0.0
+    for step, window in challenge["sequence"]:
+        start = sampled_fps * window
+        end = sampled_fps * (window + LIVENESS_CHALLENGE_STEP_SECONDS)
+        i0 = max(int(start) - 1, 0)
+        i1 = min(int(end) + 1, len(detections))
+        feats = []
+        for sample in detections[i0:i1]:
+            face = sample["face"]
+            if face is None or face[-1] < LIVENESS_MIN_FACE_CONF:
+                continue
+            feat = _head_features(width, height, face)
+            if feat is not None:
+                feats.append(feat)
+        if step == "still":
+            if _still_max_deviation(feats) > LIVENESS_CHALLENGE_STILL_MAX:
+                return False, 0.0, 'You moved during the "hold still" step. Follow the instructions exactly.'
+            continue
+        if not feats:
+            return False, 0.0, "Your face left the frame during the challenge. Follow the instructions."
+        look = _look_deviation(feats)
+        if step == "look_left" and look > -LIVENESS_CHALLENGE_MIN_DEVIATION:
+            return False, 0.0, "Please look clearly to your LEFT when asked."
+        if step == "look_right" and look < LIVENESS_CHALLENGE_MIN_DEVIATION:
+            return False, 0.0, "Please look clearly to your RIGHT when asked."
+        if step == "nod" and _still_max_deviation(feats) < LIVENESS_CHALLENGE_MIN_DEVIATION:
+            return False, 0.0, "Please nod your head when asked."
+    passed, motion, message = _liveness_from_frames(detections, width, height)
+    return passed, motion, message
+
+
+def _best_frame_bytes(
+    video_path: Path, detections: list, width: int, height: int
+) -> Optional[tuple[bytes, np.ndarray]]:
     """Persist the frame with the closest, most confident face as a JPEG.
 
     Returns (jpeg_bytes, face_row) for the best frame, or None.
     """
+    best: Optional[tuple[float, np.ndarray, int]] = None  # (score, face, frame_idx)
+    for sample in detections:
+        det = sample["face"]
+        if det is None:
+            continue
+        x, y, w, h = map(int, det[:4])
+        score = float(w * h) * det[-1]
+        if best is None or score > best[0]:
+            best = (score, det, sample["frame"])
+    if best is None:
+        return None
+    _, face, frame_idx = best
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         cap.release()
         return None
-    best: Optional[tuple[float, np.ndarray, np.ndarray]] = None  # (score, face, frame)
-    idx = 0
-    for det in detections:
-        idx += 1
-        ok, frame = cap.read()
-        if not ok:
-            break
-        if det is None:
-            continue
-        x, y, w, h = map(int, det[:4])
-        size = float(w * h)
-        score = size * det[-1]
-        if best is None or score > best[0]:
-            best = (score, det, frame)
+    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+    ok, frame = cap.read()
     cap.release()
-    if best is None:
+    if not ok or frame is None:
         return None
-    _, face, frame = best
     ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
     if not ok:
         return None
@@ -312,6 +478,7 @@ async def run_driver_identity_check(
     profile: DriverProfile,
     user: User,
     video_url: str,
+    challenge_id: Optional[str] = None,
 ) -> tuple[str, Optional[str], str, Optional[str]]:
     """Run the full identity check for a driver's live selfie clip.
 
@@ -320,7 +487,8 @@ async def run_driver_identity_check(
     selfie_url is the persisted best-frame JPEG (the driver's profile photo).
 
     Checks, in order:
-      1. Liveness - the clip must show a face that moves naturally.
+      1. Liveness - the clip must follow the issued challenge (randomized
+         instruction sequence) and show a face that moves naturally.
       2. Face match - the selfie must match the face on the uploaded ID doc
          (soft: skipped when the ID document has no usable face).
       3. NIN/BVN cross-check - delegated to SmileID (government database).
@@ -335,13 +503,33 @@ async def run_driver_identity_check(
     if video_path is None:
         return fail("Could not read the recorded clip. Please record it again.")
 
-    # 1) Liveness (motion + face presence across the clip).
-    passed, motion, _, detections = _analyze_liveness(video_path)
-    if not passed:
-        return "failed", "liveness:fail", "Liveness check failed. Keep your face in view and move naturally for the full clip.", None
+    # 1) Liveness. A challenge verifies the randomized instructions segment by
+    #    segment; without one, the standard motion gate still applies.
+    detections, _fps, width, height, duration = _sample_video(video_path)
+    if not detections:
+        return fail("Could not read the recorded clip. Please record it again.")
+
+    challenge = consume_challenge(challenge_id) if challenge_id else None
+    if challenge_id and challenge is None:
+        return fail("The liveness challenge has expired. Please start again.")
+    if challenge:
+        passed, motion, message = analyze_challenge(
+            detections, width, height, duration, challenge
+        )
+        if not passed:
+            return "failed", "liveness:fail", message, None
+        required = max(LIVENESS_MIN_DURATION_SECONDS, challenge["total"])
+        if duration < required - 0.2:
+            return fail("Your recording was too short. Please start again.")
+    else:
+        passed, motion, message = _liveness_from_frames(detections, width, height)
+        if not passed:
+            return "failed", "liveness:fail", message, None
+        if duration < LIVENESS_MIN_DURATION_SECONDS:
+            return fail("Your recording was too short. Please record the full clip.")
 
     # 2) Extract the best frame as the driver's profile photo + selfie for matching.
-    frame = _best_frame_bytes(video_path, detections)
+    frame = _best_frame_bytes(video_path, detections, width, height)
     if frame is None:
         return fail("Could not extract your face from the clip. Please record it again.")
     selfie_jpeg, selfie_face = frame

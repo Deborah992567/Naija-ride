@@ -14,6 +14,7 @@ from ..models.driver import DriverProfile
 from ..models.user import User
 from ..schemas.verification import (
     AdminVerificationOut,
+    LivenessChallengeOut,
     LivenessOut,
     LivenessSubmitReq,
     VerificationOut,
@@ -21,7 +22,7 @@ from ..schemas.verification import (
     VerificationSubmitReq,
 )
 from ..services.audit import log_audit
-from ..services.biometric import run_driver_identity_check
+from ..services.biometric import create_challenge, run_driver_identity_check
 from ..services.notifications import notify
 from ..services.verification import admin_verification_out, is_application_complete, verification_out
 
@@ -70,6 +71,17 @@ async def submit_verification(data: VerificationSubmitReq, user: User = Depends(
     return verification_out(profile)
 
 
+@router.post("/drivers/verification/liveness/challenge", response_model=LivenessChallengeOut)
+async def issue_liveness_challenge(user: User = Depends(current_user)):
+    """Issue a random instruction sequence the driver must follow on camera.
+
+    The challenge id is short-lived and consumed on submission, so a clip
+    recorded for one challenge cannot be reused for another.
+    """
+    challenge_id, public = create_challenge()
+    return {"challenge_id": challenge_id, **public}
+
+
 @router.post("/drivers/verification/liveness", response_model=LivenessOut)
 async def submit_liveness(
     data: LivenessSubmitReq,
@@ -82,7 +94,9 @@ async def submit_liveness(
     if not profile:
         raise HTTPException(status_code=404, detail="Register as a driver first")
 
-    status, ref, message, selfie_url = await run_driver_identity_check(profile, user, data.video_url)
+    status, ref, message, selfie_url = await run_driver_identity_check(
+        profile, user, data.video_url, data.challenge_id
+    )
     profile.liveness_status = status
     profile.liveness_ref = ref
     if status == "passed" and selfie_url:

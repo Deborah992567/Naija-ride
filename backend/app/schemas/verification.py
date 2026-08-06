@@ -13,8 +13,20 @@ class VerificationSubmitReq(BaseModel):
     document_urls: List[str] = []
 
 
+class LivenessChallengeStep(BaseModel):
+    instruction: str  # look_left | look_right | nod | still
+    seconds: float  # seconds from the start of the clip for this step
+
+
+class LivenessChallengeOut(BaseModel):
+    challenge_id: str
+    steps: List[LivenessChallengeStep]
+    total_seconds: float
+
+
 class LivenessSubmitReq(BaseModel):
     video_url: str
+    challenge_id: Optional[str] = None
 
 
 class LivenessOut(BaseModel):
@@ -56,6 +68,7 @@ class AdminVerificationOut(BaseModel):
     id_number: Optional[str]
     license_number: Optional[str]
     license_expiry: Optional[date]
+    profile_photo: Optional[str]
     document_urls: List[str]
     liveness_status: str
     liveness_ref: Optional[str]

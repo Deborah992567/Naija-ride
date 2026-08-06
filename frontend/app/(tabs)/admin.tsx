@@ -1,11 +1,11 @@
 // Admin console: overview stats, users, rides, deliveries, moving, payments, tickets,
 // driver verification review, payout approvals and promos.
 import { useCallback, useState } from "react";
-import { ActivityIndicator, KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
+import { ActivityIndicator, Image, KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { api, type AdminDelivery, type AdminMoving, type AdminRide, type AdminStats, type AdminUser, type AdminVerification, type Coupon, type CouponAudience, type CouponCreate, type CouponRedemption, type CouponScope, type DiscountType, type PaymentRecord, type SupportTicket, type Withdrawal } from "@/src/lib/api";
+import { api, assetUrl, type AdminDelivery, type AdminMoving, type AdminRide, type AdminStats, type AdminUser, type AdminVerification, type Coupon, type CouponAudience, type CouponCreate, type CouponRedemption, type CouponScope, type DiscountType, type PaymentRecord, type SupportTicket, type Withdrawal } from "@/src/lib/api";
 import { useAuth } from "@/src/lib/auth";
 import { colors, radii, spacing } from "@/src/lib/theme";
 
@@ -27,6 +27,14 @@ const DISCOUNT_TYPES: DiscountType[] = ["percent", "fixed"];
 
 const GOOD_STATUSES = new Set(["completed", "delivered", "paid", "verified", "approved", "successful", "closed", "replied", "active"]);
 const MID_STATUSES = new Set(["pending", "requested", "accepted", "arriving", "in_transit", "in_progress", "picked_up", "open"]);
+
+const FACE_MATCH_MIN_SCORE = 0.45;
+
+function matchScoreFromRef(ref: string | null): number | null {
+  if (!ref) return null;
+  const m = ref.match(/match:(\d+\.?\d*)/);
+  return m ? parseFloat(m[1]) : null;
+}
 
 function fmtDiscount(c: Coupon): string {
   if (c.discount_type === "percent") return `${c.discount_value}% off`;
@@ -603,10 +611,16 @@ export default function AdminScreen() {
             <Text style={styles.emptyText}>No driver verifications waiting for review.</Text>
           </View>
         ) : (
-          pendingVerifications.map((v) => (
+          pendingVerifications.map((v) => {
+            const matchScore = matchScoreFromRef(v.liveness_ref);
+            return (
             <View key={v.user_id} style={styles.card} testID="admin-verification-card">
               <View style={styles.cardHeader}>
-                <View style={styles.avatar}><Ionicons name="person" size={16} color="#fff" /></View>
+                {v.profile_photo ? (
+                  <Image source={{ uri: assetUrl(v.profile_photo) ?? undefined }} style={styles.avatarImg} testID="admin-verification-photo" />
+                ) : (
+                  <View style={styles.avatar}><Ionicons name="person" size={16} color="#fff" /></View>
+                )}
                 <View style={{ flex: 1 }}>
                   <Text style={styles.cardTitle}>{v.name || v.email}</Text>
                   <Text style={styles.cardMeta}>{v.email}</Text>
@@ -621,7 +635,19 @@ export default function AdminScreen() {
               ) : null}
               <View style={styles.cardRow}>
                 <Ionicons name="scan" size={14} color={v.liveness_status === "passed" ? colors.empty : colors.delayed} />
-                <Text style={styles.cardRowText}>Liveness {v.liveness_status ?? "none"}{v.liveness_ref ? ` · ${v.liveness_ref}` : ""}</Text>
+                <Text style={styles.cardRowText}>Liveness {v.liveness_status ?? "none"}</Text>
+                {matchScore !== null ? (
+                  <View style={[styles.matchBadge, { backgroundColor: matchScore >= FACE_MATCH_MIN_SCORE ? `${colors.empty}22` : `${colors.delayed}22` }]}>
+                    <Text style={[styles.matchBadgeText, { color: matchScore >= FACE_MATCH_MIN_SCORE ? colors.empty : colors.delayed }]} testID="admin-verification-match">
+                      {Math.round(matchScore * 100)}% match
+                    </Text>
+                  </View>
+                ) : null}
+                {v.liveness_status === "failed" ? (
+                  <View style={[styles.matchBadge, { backgroundColor: `${colors.delayed}22` }]}>
+                    <Text style={[styles.matchBadgeText, { color: colors.delayed }]}>fail</Text>
+                  </View>
+                ) : null}
               </View>
               <View style={styles.actions}>
                 <TouchableOpacity style={[styles.approveBtn, busy === v.user_id && { opacity: 0.6 }]} onPress={() => reviewVerification(v.user_id, "verified")} disabled={busy !== null} testID="admin-approve-verification">
@@ -632,7 +658,8 @@ export default function AdminScreen() {
                 </TouchableOpacity>
               </View>
             </View>
-          ))
+            );
+          })
         )}
       </View>
     );
@@ -907,6 +934,7 @@ const styles = StyleSheet.create({
   card: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, borderRadius: radii.lg, padding: 14, gap: 8 },
   cardHeader: { flexDirection: "row", alignItems: "center", gap: 10 },
   avatar: { width: 36, height: 36, borderRadius: 18, backgroundColor: colors.primary, alignItems: "center", justifyContent: "center" },
+  avatarImg: { width: 36, height: 36, borderRadius: 18 },
   avatarDriver: { backgroundColor: colors.secondaryDark },
   cardTitle: { color: colors.textPrimary, fontSize: 15, fontWeight: "900" },
   cardMeta: { color: colors.textSecondary, fontSize: 11, fontWeight: "600", marginTop: 1 },
@@ -915,7 +943,10 @@ const styles = StyleSheet.create({
   statusChipPrimary: { backgroundColor: colors.primaryLight },
   statusChipTextPrimary: { color: colors.primary },
   cardRow: { flexDirection: "row", alignItems: "center", gap: 7 },
+
   cardRowText: { color: colors.textPrimary, fontSize: 12, fontWeight: "600", flex: 1 },
+  matchBadge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: radii.pill },
+  matchBadgeText: { fontSize: 11, fontWeight: "900" },
   actions: { flexDirection: "row", gap: 10, marginTop: 2 },
   approveBtn: { flex: 1, minHeight: 46, borderRadius: radii.pill, backgroundColor: colors.primary, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6 },
   approveText: { color: "#fff", fontSize: 13, fontWeight: "900" },

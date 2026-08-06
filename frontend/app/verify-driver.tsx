@@ -6,7 +6,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import * as ImagePicker from "expo-image-picker";
-import { api, type DriverVerification, type LivenessResult } from "@/src/lib/api";
+import { api, type DriverVerification, type LivenessChallenge, type LivenessResult } from "@/src/lib/api";
 import { colors, radii, spacing } from "@/src/lib/theme";
 
 const ID_TYPES = [
@@ -23,6 +23,13 @@ const STATUS_INFO: Record<string, { color: string; text: string }> = {
   rejected: { color: colors.delayed, text: "Your submission was rejected." },
 };
 
+const CHALLENGE_LABELS: Record<string, string> = {
+  look_left: "Look LEFT",
+  look_right: "Look RIGHT",
+  nod: "Nod your head",
+  still: "Hold still",
+};
+
 export default function VerifyDriverScreen() {
   const [verification, setVerification] = useState<DriverVerification | null>(null);
   const [loading, setLoading] = useState(true);
@@ -36,6 +43,7 @@ export default function VerifyDriverScreen() {
   const [profilePhoto, setProfilePhoto] = useState<string | null>(null);
   const [documents, setDocuments] = useState<string[]>([]);
   const [liveness, setLiveness] = useState<LivenessResult | null>(null);
+  const [challengeId, setChallengeId] = useState<string | null>(null);
   const [showCamera, setShowCamera] = useState(false);
   const [capturedUri, setCapturedUri] = useState<string | null>(null);
   const [checkingLiveness, setCheckingLiveness] = useState(false);
@@ -106,7 +114,7 @@ export default function VerifyDriverScreen() {
       setShowCamera(false);
       setCapturedUri(null);
       setCheckingLiveness(true);
-      const res = await api.submitDriverLiveness({ video_url: uploaded.url });
+      const res = await api.submitDriverLiveness({ video_url: uploaded.url, challenge_id: challengeId ?? undefined });
       setLiveness(res);
       if (res.selfie_url) setProfilePhoto(res.selfie_url);
     } catch (error) {
@@ -115,7 +123,7 @@ export default function VerifyDriverScreen() {
       setUploading(false);
       setCheckingLiveness(false);
     }
-  }, [capturedUri]);
+  }, [capturedUri, challengeId]);
 
   const submit = useCallback(async () => {
     if (!idNumber.trim()) {
@@ -245,7 +253,7 @@ export default function VerifyDriverScreen() {
           </>
         )}
 
-        {showCamera ? <SelfieCameraModal visible onClose={() => { setShowCamera(false); setCapturedUri(null); }} onCaptured={(uri) => setCapturedUri(uri)} capturedUri={capturedUri} onRetake={() => setCapturedUri(null)} onConfirm={confirmSelfie} uploading={uploading} /> : null}
+        {showCamera ? <SelfieCameraModal visible onClose={() => { setShowCamera(false); setCapturedUri(null); setChallengeId(null); }} onCaptured={(uri) => setCapturedUri(uri)} capturedUri={capturedUri} onRetake={() => { setCapturedUri(null); setChallengeId(null); }} onConfirm={confirmSelfie} uploading={uploading} onChallenge={setChallengeId} /> : null}
       </ScrollView>
     </SafeAreaView>
   );
@@ -259,6 +267,7 @@ function SelfieCameraModal({
   onRetake,
   onConfirm,
   uploading,
+  onChallenge,
 }: {
   visible: boolean;
   onClose: () => void;
@@ -267,30 +276,78 @@ function SelfieCameraModal({
   onRetake: () => void;
   onConfirm: () => void;
   uploading: boolean;
+  onChallenge: (id: string | null) => void;
 }) {
   const cameraRef = useRef<CameraView | null>(null);
   const [permission, requestPermission] = useCameraPermissions();
   const [ready, setReady] = useState(false);
   const [recording, setRecording] = useState(false);
+  const [challenge, setChallenge] = useState<LivenessChallenge | null>(null);
+  const [elapsed, setElapsed] = useState(0);
+
+  const steps = challenge?.steps ?? [];
+  const stepIndex = Math.min(
+    Math.max(elapsed >= 0 ? steps.filter((s) => elapsed >= s.seconds).length - 1 : 0, 0),
+    Math.max(steps.length - 1, 0),
+  );
+
+  useEffect(() => {
+    if (!visible || !ready || !permission?.granted || capturedUri || challenge) return;
+    let cancelled = false;
+    api
+      .issueLivenessChallenge()
+      .then((c) => {
+        if (cancelled) return;
+        setChallenge(c);
+        setElapsed(0);
+        onChallenge(c.challenge_id);
+      })
+      .catch(() => {
+        if (!cancelled) Alert.alert("Liveness", "Could not start the challenge. Check your connection and try again.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [visible, ready, permission?.granted, capturedUri, challenge, onChallenge]);
 
   const record = useCallback(async () => {
-    if (!cameraRef.current || !ready || recording) return;
+    if (!cameraRef.current || !ready || recording || !challenge) return;
     setRecording(true);
+    setElapsed(0);
+    const t0 = Date.now();
+    const timer = setInterval(() => setElapsed((Date.now() - t0) / 1000), 200);
     try {
-      // recordAsync resolves automatically when maxDuration (3s) is reached.
-      const video = await cameraRef.current.recordAsync({ maxDuration: 3 });
+      // recordAsync resolves automatically when maxDuration is reached.
+      const maxDuration = Math.max(3, Math.ceil(challenge.total_seconds ?? 3));
+      const video = await cameraRef.current.recordAsync({ maxDuration });
       if (video?.uri) onCaptured(video.uri);
     } catch {
       // Recording failed (e.g. permission dropped); leave the modal open.
     } finally {
+      clearInterval(timer);
       setRecording(false);
     }
-  }, [cameraRef, ready, recording, onCaptured]);
+  }, [cameraRef, ready, recording, challenge, onCaptured]);
 
   const cancel = useCallback(() => {
     if (recording) cameraRef.current?.stopRecording();
     onClose();
   }, [recording, onClose]);
+
+  const retake = useCallback(() => {
+    setChallenge(null);
+    setElapsed(0);
+    onRetake();
+  }, [onRetake]);
+
+  const currentInstruction = steps[stepIndex]?.instruction;
+  const hint = recording
+    ? currentInstruction
+      ? `Now: ${CHALLENGE_LABELS[currentInstruction] ?? currentInstruction}`
+      : "Hold still..."
+    : challenge
+      ? `Tap to start — ${CHALLENGE_LABELS[steps[0]?.instruction] ?? "follow the instructions"}`
+      : "Preparing the challenge...";
 
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={cancel}>
@@ -302,7 +359,7 @@ function SelfieCameraModal({
               <Text style={styles.cameraVideoDoneText}>Clip recorded</Text>
             </View>
             <View style={styles.cameraActions}>
-              <TouchableOpacity style={styles.retakeBtn} onPress={onRetake} disabled={uploading}>
+              <TouchableOpacity style={styles.retakeBtn} onPress={retake} disabled={uploading}>
                 <Ionicons name="refresh" size={20} color={colors.primary} />
                 <Text style={styles.retakeText}>Retake</Text>
               </TouchableOpacity>
@@ -328,13 +385,22 @@ function SelfieCameraModal({
             ) : (
               <View style={styles.cameraOverlay}>
                 <View style={styles.cameraFrame} />
+                {steps.length > 0 ? (
+                  <View style={styles.cameraSteps}>
+                    {steps.map((s, i) => (
+                      <Text key={`${s.instruction}-${i}`} style={[styles.cameraStep, i === stepIndex && styles.cameraStepActive]}>
+                        {i + 1}. {CHALLENGE_LABELS[s.instruction] ?? s.instruction}
+                      </Text>
+                    ))}
+                  </View>
+                ) : null}
                 <View style={styles.cameraHintWrap}>
-                  <Text style={styles.cameraHint}>{recording ? "Recording... nod or turn your head slowly" : "Tap to record a 3-second clip"}</Text>
+                  <Text style={styles.cameraHint}>{hint}</Text>
                   {recording ? <View style={styles.recDot}><View style={styles.recDotInner} /></View> : null}
                 </View>
                 <View style={styles.cameraActions}>
                   <TouchableOpacity style={styles.cancelBtn} onPress={cancel}><Text style={styles.cancelText}>Cancel</Text></TouchableOpacity>
-                  <TouchableOpacity style={[styles.shutterBtn, recording && styles.shutterBtnActive]} onPress={record} disabled={recording} testID="selfie-capture">
+                  <TouchableOpacity style={[styles.shutterBtn, recording && styles.shutterBtnActive]} onPress={record} disabled={recording || !challenge} testID="selfie-capture">
                     {recording ? <Ionicons name="stop" size={26} color="#fff" /> : <Ionicons name="videocam" size={24} color="#fff" />}
                   </TouchableOpacity>
                   <View style={{ width: 64 }} />
@@ -389,6 +455,9 @@ const styles = StyleSheet.create({
   cameraPermText: { color: "#fff", fontSize: 14, fontWeight: "700", textAlign: "center" },
   cameraOverlay: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "space-between", paddingVertical: 60 },
   cameraFrame: { width: 240, height: 240, borderRadius: 120, borderWidth: 3, borderColor: "#fff", backgroundColor: "rgba(255,255,255,0.08)" },
+  cameraSteps: { flexDirection: "row", flexWrap: "wrap", justifyContent: "center", gap: 6, paddingHorizontal: 20 },
+  cameraStep: { color: "rgba(255,255,255,0.75)", fontSize: 11, fontWeight: "800", backgroundColor: "rgba(0,0,0,0.45)", paddingHorizontal: 10, paddingVertical: 6, borderRadius: radii.pill },
+  cameraStepActive: { color: "#fff", backgroundColor: colors.primary },
   cameraHintWrap: { alignItems: "center", gap: 10 },
   cameraHint: { color: "#fff", fontSize: 13, fontWeight: "700", backgroundColor: "rgba(0,0,0,0.45)", paddingHorizontal: 14, paddingVertical: 8, borderRadius: radii.pill },
   recDot: { width: 18, height: 18, borderRadius: 9, backgroundColor: "rgba(255,0,0,0.25)", alignItems: "center", justifyContent: "center" },
